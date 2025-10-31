@@ -1,8 +1,4 @@
 #!/usr/bin/env gnash
-// RUN_AS_ROOT
-// Summary: Create a passwordless admin sudo group and add configured users.
-// Config keys: adminGroup (string), addCurrentUser (boolean), users (list of usernames)
-// Notes: Validates sudoers syntax after writing drop-in files.
 
 package steps
 
