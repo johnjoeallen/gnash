@@ -1,0 +1,132 @@
+# Global provisioning configuration template.
+#
+# Copy this file to config.rc or <hostname>.rc and adjust values as needed.
+# Values in this file provide defaults. Create an additional RC file named
+# after the current host (e.g. fury.rc) in the same directory to override
+# specific settings per machine.
+#
+# Boolean flags accept true/false. Omit the variable or leave it empty to
+# inherit defaults.
+#
+# Each step may expose:
+#   <step>_enabled=true|false
+#   declare -A <step>=([key]='value' ...)
+#   <step>_<list>=('item1' 'item2')
+
+# -----------------------------------------------------------------------------
+# adminGroupNopass — Automatically add the invoking user to the passwordless
+# admin group and manage additional accounts.
+# -----------------------------------------------------------------------------
+adminGroupNopass_enabled=true
+declare -A adminGroupNopass=(
+  [adminGroup]='admin'
+  [addCurrentUser]=true
+)
+adminGroupNopass_users=('jallen')
+
+# -----------------------------------------------------------------------------
+# essentials — Install baseline CLI packages required on all systems.
+# -----------------------------------------------------------------------------
+essentials_packages=(
+  'curl'
+  'wget'
+  'zip'
+  'unzip'
+  'rsync'
+  'ca-certificates'
+  'gnupg'
+  'apt-transport-https'
+  'vim-gtk3'
+)
+
+# -----------------------------------------------------------------------------
+# ntp — Ensure systemd-timesyncd is installed and enabled.
+# -----------------------------------------------------------------------------
+ntp_enabled=true
+
+# -----------------------------------------------------------------------------
+# nisSetup — Configure NIS when a domain/server is provided.
+# -----------------------------------------------------------------------------
+declare -A nisSetup=(
+  [domain]='dublinux.net'
+  [server]='10.0.0.1'
+)
+
+# -----------------------------------------------------------------------------
+# nsswitch — Ensure NIS entries are present in nsswitch.conf.
+# -----------------------------------------------------------------------------
+nsswitch_enabled=true
+
+# -----------------------------------------------------------------------------
+# pamMkhomedir — Install and enforce pam_mkhomedir for creating home directories.
+# -----------------------------------------------------------------------------
+pamMkhomedir_enabled=true
+
+# -----------------------------------------------------------------------------
+# dockerInstall — Install Docker Engine and related tooling.
+# -----------------------------------------------------------------------------
+dockerInstall_enabled=true
+
+# -----------------------------------------------------------------------------
+# dockerDataRoot — Override the Docker data-root when non-empty.
+# -----------------------------------------------------------------------------
+declare -A dockerDataRoot=(
+  [target]='/data/docker'
+)
+
+# -----------------------------------------------------------------------------
+# dockerGroup — Ensure users are members of the docker group.
+# -----------------------------------------------------------------------------
+dockerGroup_enabled=true
+declare -A dockerGroup=(
+  [ensureUser]=true
+)
+dockerGroup_users=('jallen')
+
+# -----------------------------------------------------------------------------
+# sdkmanInstall — Ensure SDKMAN is present for managing language runtimes.
+# -----------------------------------------------------------------------------
+sdkmanInstall_enabled=true
+
+# -----------------------------------------------------------------------------
+# sdkmanMaven — Manage Maven installation via SDKMAN.
+# -----------------------------------------------------------------------------
+sdkmanMaven_enabled=true
+# sdkmanMaven_version=''  # Inherit default when empty.
+
+# -----------------------------------------------------------------------------
+# sdkmanJava — Manage Java runtimes via SDKMAN.
+# -----------------------------------------------------------------------------
+sdkmanJava_enabled=true
+declare -A sdkmanJava=(
+  [defaultJava]='17.0.16-tem'
+)
+sdkmanJava_javaVersions=(
+  '17.0.16-tem'
+  '21.0.8-tem'
+  '25-tem'
+)
+
+# -----------------------------------------------------------------------------
+# insomnia — Install the Insomnia API client.
+# -----------------------------------------------------------------------------
+insomnia_enabled=true
+
+# -----------------------------------------------------------------------------
+# jetbrainsToolbox — Install JetBrains Toolbox for IDE management.
+# -----------------------------------------------------------------------------
+jetbrainsToolbox_enabled=true
+
+# -----------------------------------------------------------------------------
+# googleChrome — Install Google Chrome Stable.
+# -----------------------------------------------------------------------------
+googleChrome_enabled=true
+
+# -----------------------------------------------------------------------------
+# extendSuspend — Ensure the system idle suspend delay is extended.
+# -----------------------------------------------------------------------------
+extendSuspend_enabled=true
+declare -A extendSuspend=(
+  [idleAction]='suspend'
+  [timeout]='PT1H'
+)

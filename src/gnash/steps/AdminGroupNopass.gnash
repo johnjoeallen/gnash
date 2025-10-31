@@ -1,0 +1,315 @@
+#!/usr/bin/env gnash
+// RUN_AS_ROOT
+// Summary: Create a passwordless admin sudo group and add configured users.
+// Config keys: adminGroup (string), addCurrentUser (boolean), users (list of usernames)
+// Notes: Validates sudoers syntax after writing drop-in files.
+
+package steps
+
+import lib.ConfigLoader
+
+public def main(args) {
+  stepKey = "adminGroupNopass"
+  if (!ConfigLoader.stepEnabled(stepKey)) {
+    println("${stepKey} disabled via configuration")
+    return 0
+  }
+
+  stepConfig = ConfigLoader.stepConfig(stepKey)
+
+  adminGroup = normalizedString(stepConfig.get("adminGroup"))
+  if (!adminGroup) {
+    adminGroup = "admin"
+  }
+
+  addCurrentUser = true
+  if (stepConfig.containsKey("addCurrentUser")) {
+    addCurrentUser = stepConfig.get("addCurrentUser") != false
+  }
+
+  users = collectUsers(stepConfig.get("users"))
+  if (addCurrentUser) {
+    currentUser = firstNonBlank(env("SUDO_USER"), env("USER"))
+    if (currentUser && currentUser != "root" && !users.contains(currentUser)) {
+      users.add(currentUser)
+    }
+  }
+
+  changed = false
+  if (ensureGroupExists(adminGroup)) {
+    changed = true
+  }
+  if (ensureSudoDefaults()) {
+    changed = true
+  }
+  if (removeLegacySudoers()) {
+    changed = true
+  }
+  if (ensureAdminDropIn(adminGroup)) {
+    changed = true
+  }
+  if (ensureUsersInGroup(adminGroup, users)) {
+    changed = true
+  }
+
+  try {
+    run("visudo -c")
+  } catch (err) {
+    if (isCommandError(err)) {
+      die("visudo -c failed:\n${err.output}")
+    }
+    throw err
+  }
+
+  if (changed) {
+    return 10
+  }
+  return 0
+}
+
+def ensureGroupExists(groupName) {
+  try {
+    run("getent group ${groupName}")
+    return false
+  } catch (err) {
+    if (!isCommandError(err)) {
+      throw err
+    }
+    if (!missingLookup(err)) {
+      throw err
+    }
+  }
+  run("groupadd ${groupName}")
+  return true
+}
+
+def ensureSudoDefaults() {
+  sudoersPath = "/etc/sudoers"
+  if (!fileExists(sudoersPath)) {
+    return false
+  }
+
+  try {
+    run("grep -Eq '^%sudo\\s+ALL=\\(ALL(:ALL)?\\)\\s+ALL$' ${sudoersPath}")
+    return false
+  } catch (err) {
+    if (!isCommandError(err)) {
+      throw err
+    }
+    if (err.exitCode != 1) {
+      throw err
+    }
+  }
+
+  sudoDropPath = "/etc/sudoers.d/00-sudo-group"
+  content = "%sudo ALL=(ALL:ALL) ALL\n"
+  return ensureFileContent(sudoDropPath, content, "0440")
+}
+
+def removeLegacySudoers() {
+  legacyPath = "/etc/sudoers.d/nopass"
+  if (!fileExists(legacyPath)) {
+    return false
+  }
+
+  content = run("cat ${legacyPath}")
+
+  if (!content.contains("%sysadmin")) {
+    return false
+  }
+
+  backupFile(legacyPath)
+  try {
+    run("rm -f ${legacyPath}")
+  } catch (err) {
+    if (isCommandError(err)) {
+      die("Unable to remove legacy sudoers file: ${legacyPath}\n${err.output}")
+    }
+    throw err
+  }
+  return true
+}
+
+def ensureAdminDropIn(adminGroup) {
+  path = "/etc/sudoers.d/99-admin-nopass"
+  content = "%${adminGroup} ALL=(ALL) NOPASSWD: ALL\n"
+  return ensureFileContent(path, content, "0440")
+}
+
+def ensureUsersInGroup(group, users) {
+  changed = false
+  for (user in users) {
+    if (!userExists(user)) {
+      println("Skipping user ${user}; account not found. ⚠️")
+      continue
+    }
+
+    try {
+      run("id -nG ${user} | tr ' ' '\\n' | grep -qx ${group}")
+    } catch (err) {
+      if (!isCommandError(err)) {
+        throw err
+      }
+      if (err.exitCode != 1) {
+        throw err
+      }
+      run("usermod -aG ${group} ${user}")
+      println("Added ${user} to ${group}. Please log out and back in for group membership to apply. 🎉")
+      changed = true
+      continue
+    }
+  }
+  return changed
+}
+
+def userExists(user) {
+  try {
+    run("id -u ${user}")
+    return true
+  } catch (err) {
+    if (!isCommandError(err)) {
+      throw err
+    }
+    if (err.exitCode == 1) {
+      return false
+    }
+    throw err
+  }
+}
+
+def ensureFileContent(path, expected, mode) {
+  if (fileExists(path)) {
+    current = run("cat ${path}")
+    if (current == expected) {
+      return false
+    }
+  }
+
+  backupFile(path)
+  writeFile(path, expected)
+  run("chmod ${mode} ${path}")
+  return true
+}
+
+def writeFile(path, content) {
+  payload = escapeSingleQuotes(content)
+  run("printf '%s' '${payload}' > ${path}")
+}
+
+def fileExists(path) {
+  try {
+    run("test -e ${path}")
+    return true
+  } catch (err) {
+    if (!isCommandError(err)) {
+      throw err
+    }
+    if (err.exitCode == 1) {
+      return false
+    }
+    throw err
+  }
+}
+
+def backupFile(path) {
+  if (!fileExists(path)) {
+    return
+  }
+  stamp = run("date +%s")
+  ts = stamp.trim()
+  run("cp ${path} ${path}.bak.${ts}")
+}
+
+def collectUsers(value) {
+  users = []
+  if (!value) {
+    return users
+  }
+
+  if (value is List) {
+    for (entry in value) {
+      addNormalizedUser(users, entry)
+    }
+  } else {
+    addNormalizedUser(users, value)
+  }
+  return users
+}
+
+def addNormalizedUser(users, value) {
+  if (!value) {
+    return
+  }
+  name = value.toString().trim()
+  if (!name) {
+    return
+  }
+  if (!users.contains(name)) {
+    users.add(name)
+  }
+}
+
+def normalizedString(value) {
+  if (!value) {
+    return null
+  }
+  result = value.toString().trim()
+  if (!result) {
+    return null
+  }
+  return result
+}
+
+def firstNonBlank(a, b) {
+  if (a && a.toString().trim()) {
+    return a.toString().trim()
+  }
+  if (b && b.toString().trim()) {
+    return b.toString().trim()
+  }
+  return null
+}
+
+def env(name) {
+  try {
+    value = run("printenv ${name}")
+    return value.trim()
+  } catch (err) {
+    if (!isCommandError(err)) {
+      throw err
+    }
+    if (err.exitCode == 1) {
+      return null
+    }
+    throw err
+  }
+}
+
+def escapeSingleQuotes(text) {
+  return text.replace("'", "'\"'\"'")
+}
+
+def run(command) {
+  (output, exitCode) = $"${command} 2>&1"
+  if (exitCode != 0) {
+    throw commandError(command, exitCode, output)
+  }
+  return output
+}
+
+def missingLookup(err) {
+  return err.exitCode == 1 || err.exitCode == 2
+}
+
+def commandError(command, exitCode, output) {
+  return {
+    kind: "CommandError",
+    command: command,
+    exitCode: exitCode,
+    output: output,
+  }
+}
+
+def isCommandError(err) {
+  return err is Map && err.get("kind") == "CommandError"
+}
