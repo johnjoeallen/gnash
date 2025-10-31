@@ -12,9 +12,11 @@
 # Scalar overrides can also be provided via the same variable names.
 
 set -euo pipefail
+set -E
 IFS=$'\n\t'
 
 __gnash_die() {
+  trap - ERR
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
@@ -22,6 +24,16 @@ __gnash_die() {
 __gnash_warn() {
   printf 'warn: %s\n' "$*" >&2
 }
+
+# Emits a terse trace when an unexpected command failure triggers ERR.
+__gnash_trap_err() {
+  local rc=$?
+  local line="${BASH_LINENO[0]:-?}"
+  local src="${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}"
+  printf 'error: command failed (exit %s) at %s:%s\n' "$rc" "$src" "$line" >&2
+}
+
+trap '__gnash_trap_err' ERR
 
 __gnash_bool_truthy() {
   local value="${1:-}"
