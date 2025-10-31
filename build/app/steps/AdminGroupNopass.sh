@@ -116,11 +116,13 @@ __gnash_config_step_list() {
   fi
 }
 
+# Determines whether a filesystem entry exists.
 __gnash_file_exists() {
   local path="$1"
   [[ -e "$path" ]]
 }
 
+# Captures a timestamped backup of the managed path when it already exists.
 __gnash_backup_file() {
   local path="$1"
   if ! __gnash_file_exists "$path"; then
@@ -131,12 +133,15 @@ __gnash_backup_file() {
   cp "$path" "${path}.bak.${ts}"
 }
 
+# Writes content to disk via printf, allowing multi-line strings.
 __gnash_write_file() {
   local path="$1"
   local content="$2"
   printf '%s' "$content" >"$path"
 }
 
+# Ensures a file matches the desired content, backing up the previous version and
+# enforcing the requested permissions when changes are applied.
 __gnash_ensure_file_content() {
   local path="$1"
   local expected="$2"
@@ -154,11 +159,14 @@ __gnash_ensure_file_content() {
   return 0
 }
 
+# Normalises the configured users list into a newline-delimited array.
 __gnash_collect_users() {
   local key="$1"
   mapfile -t _GNASH_COLLECTED_USERS < <(__gnash_config_step_list "$key" "users")
 }
 
+# Coordinates the adminGroupNopass provisioning step: loads configuration, applies
+# sudo policy drop-ins, synchronises group membership, and signals change with exit 10.
 __gnash_step_key="adminGroupNopass"
 
 __gnash_load_rc
@@ -195,6 +203,7 @@ if [[ ${#_GNASH_COLLECTED_USERS[@]} -gt 0 ]]; then
   done
 fi
 
+# Augment configured users with the interactive account when invoked under sudo.
 if (( add_current_user )); then
   current_user="${SUDO_USER:-${USER:-}}"
   if [[ -n "$current_user" && "$current_user" != "root" ]]; then
@@ -213,11 +222,14 @@ fi
 
 changed=0
 
+# Ensure the admin group exists; create it when the NSS lookup fails.
 if ! getent group "$admin_group" >/dev/null 2>&1; then
   groupadd "$admin_group"
   changed=1
 fi
 
+# Ensure the canonical %sudo policy is present by writing the 00-sudo-group drop-in
+# when the primary sudoers file lacks the expected entry.
 if [[ -f /etc/sudoers ]]; then
   if ! grep -Eq '^%sudo[[:space:]]+ALL=\(ALL(:ALL)?\)[[:space:]]+ALL$' /etc/sudoers; then
     sudo_drop_path="/etc/sudoers.d/00-sudo-group"
@@ -229,6 +241,7 @@ if [[ -f /etc/sudoers ]]; then
   fi
 fi
 
+# Remove the legacy /etc/sudoers.d/nopass drop-in when it still references %sysadmin.
 legacy_path="/etc/sudoers.d/nopass"
 if [[ -f "$legacy_path" ]]; then
   if grep -q "%sysadmin" "$legacy_path"; then
@@ -240,6 +253,7 @@ if [[ -f "$legacy_path" ]]; then
   fi
 fi
 
+# Write /etc/sudoers.d/99-admin-nopass for the target admin group when content changes.
 admin_drop_path="/etc/sudoers.d/99-admin-nopass"
 admin_drop_content="%${admin_group} ALL=(ALL) NOPASSWD: ALL
 "
@@ -247,6 +261,8 @@ if __gnash_ensure_file_content "$admin_drop_path" "$admin_drop_content" "0440"; 
   changed=1
 fi
 
+# Synchronise configured users with the admin group, skipping missing accounts and
+# adding members when they are not already present.
 for user in "${desired_users[@]}"; do
   if ! id -u "$user" >/dev/null 2>&1; then
     printf 'Skipping user %s; account not found. ⚠️\n' "$user"

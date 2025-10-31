@@ -4,6 +4,14 @@ package steps
 
 import lib.ConfigLoader
 
+// RUN_AS_ROOT
+// Summary: Create a passwordless admin sudo group and add configured users.
+// Config keys: adminGroup (string), addCurrentUser (boolean), users (list of usernames)
+// Notes: Validates sudoers syntax after writing drop-in files.
+
+// Coordinates the provisioning step: loads configuration, applies sudoer drop-ins,
+// synchronises group membership, and returns 10 when any change is detected so that
+// orchestration layers can record the mutation when this script is executed.
 public def main(args) {
   stepKey = "adminGroupNopass"
   if (!ConfigLoader.stepEnabled(stepKey)) {
@@ -25,6 +33,7 @@ public def main(args) {
 
   users = collectUsers(stepConfig.get("users"))
   if (addCurrentUser) {
+    // Augment configured users with the interactive account when the step runs via sudo.
     currentUser = firstNonBlank(env("SUDO_USER"), env("USER"))
     if (currentUser && currentUser != "root" && !users.contains(currentUser)) {
       users.add(currentUser)
@@ -63,6 +72,8 @@ public def main(args) {
   return 0
 }
 
+// Ensures the admin group exists; creates it with groupadd when getent cannot
+// find the entry. Unexpected command failures are rethrown for visibility.
 def ensureGroupExists(groupName) {
   try {
     run("getent group ${groupName}")
@@ -79,6 +90,8 @@ def ensureGroupExists(groupName) {
   return true
 }
 
+// Ensures the canonical %sudo policy is present by writing the 00-sudo-group drop-in
+// when the primary sudoers file lacks the expected entry.
 def ensureSudoDefaults() {
   sudoersPath = "/etc/sudoers"
   if (!fileExists(sudoersPath)) {
@@ -102,6 +115,8 @@ def ensureSudoDefaults() {
   return ensureFileContent(sudoDropPath, content, "0440")
 }
 
+// Cleans up legacy sudoers snippets referencing the deprecated %sysadmin group,
+// backing up the original file before removal to keep recovery simple.
 def removeLegacySudoers() {
   legacyPath = "/etc/sudoers.d/nopass"
   if (!fileExists(legacyPath)) {
@@ -126,12 +141,16 @@ def removeLegacySudoers() {
   return true
 }
 
+// Writes /etc/sudoers.d/99-admin-nopass for the target group, replacing the file
+// only when the on-disk contents differ so that repeated runs remain idempotent.
 def ensureAdminDropIn(adminGroup) {
   path = "/etc/sudoers.d/99-admin-nopass"
   content = "%${adminGroup} ALL=(ALL) NOPASSWD: ALL\n"
   return ensureFileContent(path, content, "0440")
 }
 
+// Synchronises desired users with the admin group, ignoring missing accounts and
+// invoking usermod when membership changes occur.
 def ensureUsersInGroup(group, users) {
   changed = false
   for (user in users) {
@@ -157,7 +176,8 @@ def ensureUsersInGroup(group, users) {
   }
   return changed
 }
-
+// Lightweight existence probe using `id -u`. Treats exit code 1 as a clean miss
+// and propagates any other failure for higher-level handling.
 def userExists(user) {
   try {
     run("id -u ${user}")
@@ -173,6 +193,8 @@ def userExists(user) {
   }
 }
 
+// Replaces the target file when its contents differ from the desired body, backing
+// up the previous version and enforcing the requested permissions.
 def ensureFileContent(path, expected, mode) {
   if (fileExists(path)) {
     current = run("cat ${path}")
@@ -186,12 +208,14 @@ def ensureFileContent(path, expected, mode) {
   run("chmod ${mode} ${path}")
   return true
 }
-
+// Writes content using printf with escaped single quotes so multi-line bodies are
+// handled safely inside a single-quoted command.
 def writeFile(path, content) {
   payload = escapeSingleQuotes(content)
   run("printf '%s' '${payload}' > ${path}")
 }
-
+// Determines whether a filesystem entry exists, distinguishing the standard
+// "not found" exit from other errors.
 def fileExists(path) {
   try {
     run("test -e ${path}")
@@ -206,7 +230,8 @@ def fileExists(path) {
     throw err
   }
 }
-
+// Captures a timestamped backup beside the managed path so operators can inspect
+// or restore the prior state after a modification.
 def backupFile(path) {
   if (!fileExists(path)) {
     return
@@ -215,7 +240,8 @@ def backupFile(path) {
   ts = stamp.trim()
   run("cp ${path} ${path}.bak.${ts}")
 }
-
+// Normalises any configured `users` value into an ordered, duplicate-free list
+// so downstream processing can assume a clean collection.
 def collectUsers(value) {
   users = []
   if (!value) {
@@ -231,7 +257,8 @@ def collectUsers(value) {
   }
   return users
 }
-
+// Adds a single candidate to the working list when it is non-empty and not
+// already present, trimming whitespace to keep comparisons predictable.
 def addNormalizedUser(users, value) {
   if (!value) {
     return
@@ -244,7 +271,7 @@ def addNormalizedUser(users, value) {
     users.add(name)
   }
 }
-
+// Turns an arbitrary value into a trimmed string or null when the content is blank.
 def normalizedString(value) {
   if (!value) {
     return null
@@ -255,7 +282,8 @@ def normalizedString(value) {
   }
   return result
 }
-
+// Returns the first non-empty argument after trimming, useful when preferring
+// SUDO_USER over USER while still handling direct invocation gracefully.
 def firstNonBlank(a, b) {
   if (a && a.toString().trim()) {
     return a.toString().trim()
@@ -265,7 +293,8 @@ def firstNonBlank(a, b) {
   }
   return null
 }
-
+// Reads an environment variable via printenv, returning null when absent and
+// rethrowing unexpected errors for higher-level handling.
 def env(name) {
   try {
     value = run("printenv ${name}")
@@ -280,11 +309,13 @@ def env(name) {
     throw err
   }
 }
-
+// Escapes single quotes for safe interpolation into single-quoted printf bodies.
 def escapeSingleQuotes(text) {
   return text.replace("'", "'\"'\"'")
 }
 
+// Executes a shell command, returning stdout on success and throwing a structured
+// error map when the command exits with a non-zero status.
 def run(command) {
   (output, exitCode) = $"${command} 2>&1"
   if (exitCode != 0) {
@@ -293,10 +324,14 @@ def run(command) {
   return output
 }
 
+// Identifies exit codes that correspond to simple lookup misses (1 or 2) so callers
+// can distinguish expected absence from genuine errors.
 def missingLookup(err) {
   return err.exitCode == 1 || err.exitCode == 2
 }
 
+// Builds the structured error map returned by run, capturing the command, exit code,
+// and combined output for downstream diagnostics.
 def commandError(command, exitCode, output) {
   return {
     kind: "CommandError",
@@ -306,6 +341,8 @@ def commandError(command, exitCode, output) {
   }
 }
 
+// Predicate that recognises the error objects produced by commandError, allowing
+// callers to branch on expected versus fatal failures.
 def isCommandError(err) {
   return err is Map && err.get("kind") == "CommandError"
 }
