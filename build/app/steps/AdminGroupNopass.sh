@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
 # Generated from Gnash source steps/AdminGroupNopass.gnash — DO NOT EDIT.
-# Summary: Create a passwordless admin sudo group and add configured users.
-#
-# Configuration is loaded from the first readable RC file among:
-#   ${GNASH_RC_OVERRIDE:-${GNASH_RC}}
-#   ./.gnashrc, ~/.gnashrc, /etc/gnashrc
-# or skipped when GNASH_NO_RC=1. RC files may define:
-#   adminGroupNopass_enabled=true|false
-#   declare -A adminGroupNopass=([adminGroup]="admin" [addCurrentUser]=true)
-#   adminGroupNopass_users=(alice bob)
-# Scalar overrides can also be provided via the same variable names.
-
 set -euo pipefail
 set -E
 IFS=$'\n\t'
@@ -53,16 +42,50 @@ __gnash_bool_falsey() {
   return 0
 }
 
+__gnash_promote_assoc_locals() {
+  local -n __gnash_seen_ref="$1"
+  local __gnash_var=""
+  while IFS= read -r __gnash_var; do
+    [[ "$__gnash_var" == __gnash_* ]] && continue
+    [[ "$__gnash_var" == BASH_* ]] && continue
+    local __gnash_decl
+    __gnash_decl=$(declare -p "$__gnash_var" 2>/dev/null) || continue
+    [[ "$__gnash_decl" == "declare -A "* ]] || continue
+    local __gnash_found=0
+    for existing in "${__gnash_seen_ref[@]}"; do
+      if [[ "$existing" == "$__gnash_var" ]]; then
+        __gnash_found=1
+        break
+      fi
+    done
+    if (( !__gnash_found )); then
+      __gnash_decl=${__gnash_decl/#declare -A /declare -gA }
+      eval "$__gnash_decl"
+      __gnash_seen_ref+=("$__gnash_var")
+    fi
+  done < <(compgen -A variable)
+}
+
 __gnash_load_rc() {
   if [[ "${GNASH_NO_RC:-0}" == "1" ]]; then
     return
   fi
+
+  local -a __gnash_assoc_seen=()
+  local __gnash_existing=""
+  while IFS= read -r __gnash_existing; do
+    local __gnash_decl
+    __gnash_decl=$(declare -p "$__gnash_existing" 2>/dev/null) || continue
+    [[ "$__gnash_decl" == "declare -A "* ]] || continue
+    __gnash_assoc_seen+=("$__gnash_existing")
+  done < <(compgen -A variable)
 
   local override="${GNASH_RC_OVERRIDE:-${GNASH_RC:-}}"
   if [[ -n "$override" ]]; then
     if [[ -r "$override" ]]; then
       # shellcheck disable=SC1090
       source "$override"
+      __gnash_promote_assoc_locals __gnash_assoc_seen
     else
       __gnash_die "RC override '$override' not readable"
     fi
@@ -85,6 +108,7 @@ __gnash_load_rc() {
   if [[ -n "$rc" ]]; then
     # shellcheck disable=SC1090
     source "$rc"
+    __gnash_promote_assoc_locals __gnash_assoc_seen
   fi
 }
 

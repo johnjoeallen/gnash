@@ -1,0 +1,66 @@
+package scripts
+
+public def main(args) {
+    __gnash_load_rc()
+
+    println("== Step Status ==")
+    dumpStepStatus("adminGroupNopass")
+    dumpStepStatus("dockerGroup")
+    dumpStepStatus("essentials")
+    dumpStepStatus("sdkmanJava")
+
+    println("\n== Admin Group Settings ==")
+    dumpStepValue("adminGroupNopass", "adminGroup")
+    dumpStepValue("adminGroupNopass", "addCurrentUser")
+    dumpList("adminGroupNopass", "users")
+
+    println("\n== Essentials Packages ==")
+    dumpList("essentials", "packages")
+
+    println("\n== Docker Group Users ==")
+    dumpList("dockerGroup", "users")
+
+    println("\n== SDKMAN Java Versions ==")
+    dumpStepValue("sdkmanJava", "defaultJava")
+    dumpList("sdkmanJava", "javaVersions")
+}
+
+def dumpStepStatus(stepKey) {
+    status = "disabled"
+    if (__gnash_config_step_enabled(stepKey)) {
+        status = "enabled"
+    }
+    println("${stepKey}: ${status}")
+}
+
+def dumpStepValue(stepKey, field) {
+    value = __gnash_config_step_value(stepKey, field)
+    if (!value) {
+        println("${stepKey}.${field}: <empty>")
+        return
+    }
+    println("${stepKey}.${field}: ${value}")
+}
+
+def dumpList(stepKey, field) {
+    token = __gnash_config_step_list(stepKey, field)
+    if (token is List) {
+        println("${stepKey}.${field} raw: <list>")
+        entryPrinted = ""
+        for (entry in token) {
+            println("  - ${entry}")
+            entryPrinted = "yes"
+        }
+        if (!entryPrinted) {
+            println("  (no entries)")
+        }
+        return
+    }
+    if (token) {
+        println("${stepKey}.${field} raw: [${token}]")
+        println("  - ${token}")
+    } else {
+        println("${stepKey}.${field} raw: []")
+        println("  (no entries)")
+    }
+}
