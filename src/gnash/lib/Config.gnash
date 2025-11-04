@@ -1,0 +1,80 @@
+package lib
+
+/*
+ * Configuration access helpers that wrap the legacy __gnash_* runtime shims.
+ * Modules that need provisioning settings can import this file instead of
+ * calling the underscored functions directly.
+ */
+
+configLoaded = false
+
+private def ensureLoaded() {
+  if (configLoaded) {
+    return
+  }
+  __gnash_load_rc()
+  configLoaded = true
+}
+
+public def reload() {
+  configLoaded = false
+  ensureLoaded()
+}
+
+public def stepEnabled(stepKey) {
+  ensureLoaded()
+  return __gnash_config_step_enabled(stepKey)
+}
+
+public def stepValue(stepKey, field) {
+  ensureLoaded()
+  return __gnash_config_step_value(stepKey, field)
+}
+
+public def stepList(stepKey, field) {
+  ensureLoaded()
+  return __gnash_config_step_list(stepKey, field)
+}
+
+public def boolean(stepKey, field, defaultValue) {
+  ensureLoaded()
+  raw = __gnash_config_step_value(stepKey, field)
+  if (raw is Boolean) {
+    return raw
+  }
+  if (!raw) {
+    return defaultValue
+  }
+  text = raw.toString().trim().toLowerCase()
+  if (!text) {
+    return defaultValue
+  }
+  if (text == "true" || text == "1" || text == "yes" || text == "on") {
+    return true
+  }
+  if (text == "false" || text == "0" || text == "no" || text == "off") {
+    return false
+  }
+  return defaultValue
+}
+
+public def string(stepKey, field, defaultValue) {
+  ensureLoaded()
+  raw = __gnash_config_step_value(stepKey, field)
+  if (!raw) {
+    return defaultValue
+  }
+  return raw.toString()
+}
+
+public def list(stepKey, field) {
+  ensureLoaded()
+  raw = __gnash_config_step_list(stepKey, field)
+  if (raw is List) {
+    return raw
+  }
+  if (!raw) {
+    return []
+  }
+  return [raw]
+}

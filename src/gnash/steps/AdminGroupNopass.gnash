@@ -2,7 +2,7 @@
 
 package steps
 
-import lib.ConfigLoader
+import lib.Config
 
 // RUN_AS_ROOT
 // Summary: Create a passwordless admin sudo group and add configured users.
@@ -14,24 +14,19 @@ import lib.ConfigLoader
 // orchestration layers can record the mutation when this script is executed.
 public def main(args) {
   stepKey = "adminGroupNopass"
-  if (!ConfigLoader.stepEnabled(stepKey)) {
+  if (!Config.stepEnabled(stepKey)) {
     println("${stepKey} disabled via configuration")
     return 0
   }
 
-  stepConfig = ConfigLoader.stepConfig(stepKey)
-
-  adminGroup = normalizedString(stepConfig.get("adminGroup"))
+  adminGroup = normalizedString(Config.stepValue(stepKey, "adminGroup"))
   if (!adminGroup) {
     adminGroup = "admin"
   }
 
-  addCurrentUser = true
-  if (stepConfig.containsKey("addCurrentUser")) {
-    addCurrentUser = stepConfig.get("addCurrentUser") != false
-  }
+  addCurrentUser = Config.boolean(stepKey, "addCurrentUser", true)
 
-  users = collectUsers(stepConfig.get("users"))
+  users = collectUsers(Config.stepList(stepKey, "users"))
   if (addCurrentUser) {
     // Augment configured users with the interactive account when the step runs via sudo.
     currentUser = firstNonBlank(env("SUDO_USER"), env("USER"))

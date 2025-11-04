@@ -1,7 +1,8 @@
 package scripts
 
+import lib.Config
+
 public def main(args) {
-    __gnash_load_rc()
 
     println("== Step Status ==")
     dumpStepStatus("adminGroupNopass")
@@ -27,14 +28,14 @@ public def main(args) {
 
 def dumpStepStatus(stepKey) {
     status = "disabled"
-    if (__gnash_config_step_enabled(stepKey)) {
+    if (Config.stepEnabled(stepKey)) {
         status = "enabled"
     }
     println("${stepKey}: ${status}")
 }
 
 def dumpStepValue(stepKey, field) {
-    value = __gnash_config_step_value(stepKey, field)
+    value = Config.stepValue(stepKey, field)
     if (!value) {
         println("${stepKey}.${field}: <empty>")
         return
@@ -43,7 +44,7 @@ def dumpStepValue(stepKey, field) {
 }
 
 def dumpList(stepKey, field) {
-    token = __gnash_config_step_list(stepKey, field)
+    token = Config.stepList(stepKey, field)
     if (token is List) {
         println("${stepKey}.${field} raw: <list>")
         entryPrinted = ""
