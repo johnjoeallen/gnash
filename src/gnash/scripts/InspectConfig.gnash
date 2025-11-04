@@ -1,8 +1,7 @@
 package scripts
 
-import lib.Config
-
 public def main(args) {
+    __gnash_load_rc()
 
     println("== Step Status ==")
     dumpStepStatus("adminGroupNopass")
@@ -25,20 +24,18 @@ public def main(args) {
     dumpStepValue("sdkmanJava", "defaultJava")
     dumpList("sdkmanJava", "javaVersions")
 
-    println("\n== Step Snapshot (path API) ==")
-    dumpStepSnapshot("sdkmanJava")
 }
 
 def dumpStepStatus(stepKey) {
     status = "disabled"
-    if (Config.stepEnabled(stepKey)) {
+    if (__gnash_config_step_enabled(stepKey)) {
         status = "enabled"
     }
     println("${stepKey}: ${status}")
 }
 
 def dumpStepValue(stepKey, field) {
-    value = Config.stepValue(stepKey, field)
+    value = __gnash_config_step_value(stepKey, field)
     if (!value) {
         println("${stepKey}.${field}: <empty>")
         return
@@ -47,7 +44,7 @@ def dumpStepValue(stepKey, field) {
 }
 
 def dumpList(stepKey, field) {
-    token = Config.stepList(stepKey, field)
+    token = __gnash_config_step_list(stepKey, field)
     if (token is List) {
         println("${stepKey}.${field} raw: <list>")
         entryPrinted = ""
@@ -66,17 +63,5 @@ def dumpList(stepKey, field) {
     } else {
         println("${stepKey}.${field} raw: []")
         println("  (no entries)")
-    }
-}
-
-def dumpStepSnapshot(stepKey) {
-    snapshot = Config.get("steps.${stepKey}.")
-    if (!snapshot) {
-        println("${stepKey} snapshot: <missing>")
-        return
-    }
-    println("${stepKey} snapshot:")
-    for (key in snapshot.keySet()) {
-        println("  ${key}: ${snapshot.get(key)}")
     }
 }
