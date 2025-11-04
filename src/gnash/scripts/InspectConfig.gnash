@@ -24,6 +24,9 @@ public def main(args) {
     println("\n== SDKMAN Java Versions ==")
     dumpStepValue("sdkmanJava", "defaultJava")
     dumpList("sdkmanJava", "javaVersions")
+
+    println("\n== Step Snapshot (path API) ==")
+    dumpStepSnapshot("sdkmanJava")
 }
 
 def dumpStepStatus(stepKey) {
@@ -63,5 +66,17 @@ def dumpList(stepKey, field) {
     } else {
         println("${stepKey}.${field} raw: []")
         println("  (no entries)")
+    }
+}
+
+def dumpStepSnapshot(stepKey) {
+    snapshot = Config.get("steps.${stepKey}.")
+    if (!snapshot) {
+        println("${stepKey} snapshot: <missing>")
+        return
+    }
+    println("${stepKey} snapshot:")
+    for (key in snapshot.keySet()) {
+        println("  ${key}: ${snapshot.get(key)}")
     }
 }
