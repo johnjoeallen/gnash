@@ -1,85 +1,789 @@
 package lib
 
-import lib.Runtime
-
 /*
- * Thin façade over the provisioning configuration runtime.
+ * Repository-specific configuration loader.
  *
- * Scripts call these helpers to avoid referencing the legacy __gnash_* shims
- * directly. During the current Gnash → Bash transition the real behaviour is
- * provided by the transpiled Bash runtime (see scripts/runtime/config-runtime.sh).
+ * Parses developer provisioning RC files and exposes a path-based access API:
+ *   Config.get("steps.sdkmanJava.defaultJava")
+ *   Config.get("steps.sdkmanJava.")            // returns map of fields
+ *   Config.isTrue("steps.adminGroupNopass.enabled")
+ *   Config.list("steps.essentials.packages")
+ *
+ * Step-oriented helpers remain available for existing scripts via
+ * Config.stepEnabled/value/list/boolean/string.
  */
 
+configLoaded = false
+configData = createEmptyConfig()
+
 public def reload() {
-  Runtime.invoke("Config.reload", [])
+  configLoaded = false
+  ensureLoaded()
+}
+
+public def get(path) {
+  return resolve(path, null)
+}
+
+public def getOrDefault(path, defaultValue) {
+  return resolve(path, defaultValue)
+}
+
+public def isTrue(path) {
+  return isTrueOrDefault(path, false)
+}
+
+public def isTrueOrDefault(path, defaultValue) {
+  value = resolve(path, null)
+  return coerceBoolean(value, defaultValue)
+}
+
+public def list(path) {
+  value = resolve(path, null)
+  if (!value) {
+    return []
+  }
+  if (value is List) {
+    return cloneList(value)
+  }
+  return [value]
 }
 
 public def stepEnabled(stepKey) {
-  return Runtime.invoke("Config.stepEnabled", [stepKey]) == true
+  return isTrueOrDefault("steps.${stepKey}.enabled", true)
 }
 
 public def stepValue(stepKey, field) {
-  return Runtime.call("Config.stepValue", [stepKey, field])
+  return get("steps.${stepKey}.${field}")
 }
 
 public def stepList(stepKey, field) {
-  return Runtime.call("Config.stepList", [stepKey, field])
+  return list("steps.${stepKey}.${field}")
 }
 
 public def boolean(stepKey, field, defaultValue) {
-  result = Runtime.call("Config.boolean", [stepKey, field, defaultValue])
-  if (!result) {
-    return defaultValue
-  }
-  text = result.toString().toLowerCase()
-  if (text == "true") {
-    return true
-  }
-  if (text == "false") {
-    return false
-  }
-  return defaultValue
+  return isTrueOrDefault("steps.${stepKey}.${field}", defaultValue)
 }
 
 public def string(stepKey, field, defaultValue) {
-  value = Runtime.call("Config.string", [stepKey, field, defaultValue])
+  value = get("steps.${stepKey}.${field}")
   if (!value) {
     return defaultValue
   }
   return value.toString()
 }
 
-public def get(path) {
-  return Runtime.call("Config.get", [path])
-}
+private def resolve(path, defaultValue) {
+  ensureLoaded()
+  if (!path) {
+    return defaultValue
+  }
+  trimmed = path.toString().trim()
+  if (!trimmed) {
+    return defaultValue
+  }
 
-public def getOrDefault(path, defaultValue) {
-  value = Runtime.call("Config.getOrDefault", [path, defaultValue])
-  if (!value) {
+  scopeRequested = false
+  if (trimmed.endsWith(".")) {
+    scopeRequested = true
+    trimmed = trimmed.substring(0, trimmed.length() - 1)
+  }
+
+  segments = splitPath(trimmed)
+  if (!segments) {
+    return defaultValue
+  }
+
+  value = resolveSegments(segments, scopeRequested)
+  if (value == null) {
     return defaultValue
   }
   return value
 }
 
-public def isTrue(path) {
-  return Runtime.invoke("Config.isTrue", [path]) == true
+private def resolveSegments(segments, scopeRequested) {
+  if (!segments) {
+    return null
+  }
+  head = segments.get(0)
+  if (head == "steps") {
+    return resolveSteps(segments, scopeRequested)
+  }
+  if (head == "globals") {
+    return resolveGlobals(segments, scopeRequested, true)
+  }
+  return resolveGlobals(segments, scopeRequested, false)
 }
 
-public def isTrueOrDefault(path, defaultValue) {
-  result = Runtime.call("Config.isTrueOrDefault", [path, defaultValue])
-  if (!result) {
+private def resolveSteps(segments, scopeRequested) {
+  steps = configData.get("steps")
+  if (!steps) {
+    return null
+  }
+
+  if (segments.size() == 1) {
+    return cloneStepsMap()
+  }
+
+  stepKey = segments.get(1)
+  entry = steps.get(stepKey)
+  if (!entry) {
+    return null
+  }
+
+  if (segments.size() == 2) {
+    return stepView(entry)
+  }
+
+  fieldName = joinSegments(segments, 2)
+  if (!fieldName) {
+    return null
+  }
+
+  if (fieldName == "enabled") {
+    enabled = entry.get("enabled")
+    if (enabled == null) {
+      return true
+    }
+    return enabled
+  }
+
+  valuesMap = entry.get("values")
+  if (valuesMap && valuesMap.containsKey(fieldName)) {
+    return valuesMap.get(fieldName)
+  }
+
+  listsMap = entry.get("lists")
+  if (listsMap && listsMap.containsKey(fieldName)) {
+    return cloneList(listsMap.get(fieldName))
+  }
+
+  if (fieldName == "values" && scopeRequested) {
+    return cloneMap(valuesMap)
+  }
+  if (fieldName == "lists" && scopeRequested) {
+    return cloneListMap(listsMap)
+  }
+
+  return null
+}
+
+private def resolveGlobals(segments, scopeRequested, explicitNamespace) {
+  globals = configData.get("globals")
+  if (!globals) {
+    return null
+  }
+
+  if (explicitNamespace) {
+    if (segments.size() == 1) {
+      return cloneMap(globals)
+    }
+    key = joinSegments(segments, 1)
+    return globals.get(key)
+  }
+
+  key = segments.get(0)
+  if (segments.size() == 1) {
+    return globals.get(key)
+  }
+
+  // Nested globals are not used currently; return null to avoid surprises.
+  return null
+}
+
+private def coerceBoolean(value, defaultValue) {
+  if (value == null) {
     return defaultValue
   }
-  text = result.toString().toLowerCase()
-  if (text == "true") {
+  if (value is Boolean) {
+    return value
+  }
+  text = value.toString().trim().toLowerCase()
+  if (!text) {
+    return defaultValue
+  }
+  if (text == "true" || text == "yes" || text == "on" || text == "1") {
     return true
   }
-  if (text == "false") {
+  if (text == "false" || text == "no" || text == "off" || text == "0") {
     return false
   }
   return defaultValue
 }
 
-public def list(path) {
-  return Runtime.call("Config.list", [path])
+private def ensureLoaded() {
+  if (configLoaded) {
+    return
+  }
+  configData = createEmptyConfig()
+
+  paths = discoverConfigPaths()
+  for (path in paths) {
+    applyConfigFile(path)
+  }
+
+  configLoaded = true
+}
+
+private def createEmptyConfig() {
+  return {
+    steps: {},
+    globals: {},
+  }
+}
+
+private def discoverConfigPaths() {
+  paths = []
+  if (isNoRc()) {
+    return paths
+  }
+
+  overridePath = getenv("GNASH_RC_OVERRIDE")
+  if (isReadableFile(overridePath)) {
+    paths.add(overridePath)
+    return paths
+  }
+
+  rcPath = getenv("GNASH_RC")
+  if (isReadableFile(rcPath)) {
+    paths.add(rcPath)
+    return paths
+  }
+
+  repoPath = "config/provision.rc"
+  if (isReadableFile(repoPath)) {
+    paths.add(repoPath)
+  }
+
+  hostName = hostname()
+  if (hostName) {
+    hostPath = "config/${hostName}.rc"
+    if (isReadableFile(hostPath)) {
+      paths.add(hostPath)
+    }
+  }
+
+  return paths
+}
+
+private def isNoRc() {
+  flag = getenv("GNASH_NO_RC")
+  if (!flag) {
+    return false
+  }
+  return coerceBoolean(flag, false)
+}
+
+private def getenv(name) {
+  if (!name) {
+    return null
+  }
+  escaped = escapeSingleQuotes(name)
+  (output, exitCode) = $"printenv '${escaped}'"
+  if (exitCode != 0) {
+    return null
+  }
+  return output.trim()
+}
+
+private def hostname() {
+  (output, exitCode) = $"hostname"
+  if (exitCode != 0) {
+    return null
+  }
+  return output.trim()
+}
+
+private def isReadableFile(path) {
+  if (!path) {
+    return false
+  }
+  escaped = escapeSingleQuotes(path)
+  (_, exitCode) = $"test -r '${escaped}'"
+  return exitCode == 0
+}
+
+private def readFile(path) {
+  if (!path) {
+    return null
+  }
+  escaped = escapeSingleQuotes(path)
+  (output, exitCode) = $"cat '${escaped}'"
+  if (exitCode != 0) {
+    return null
+  }
+  return output
+}
+
+private def applyConfigFile(path) {
+  content = readFile(path)
+  if (!content) {
+    return
+  }
+
+  lines = content.split("\n")
+  mode = "default"
+  currentName = null
+  buffer = []
+
+  for (rawLine in lines) {
+    line = rawLine.trim()
+
+    if (mode == "map") {
+      if (!line || line.startsWith("#")) {
+        continue
+      }
+      closingIndex = line.indexOf(")")
+      if (closingIndex >= 0) {
+        segment = line.substring(0, closingIndex).trim()
+        if (segment) {
+          buffer.add(segment)
+        }
+        applyAssoc(currentName, buffer)
+        mode = "default"
+        currentName = null
+        buffer = []
+        continue
+      }
+      buffer.add(line)
+      continue
+    }
+
+    if (mode == "list") {
+      if (!line || line.startsWith("#")) {
+        continue
+      }
+      closingIndex = line.indexOf(")")
+      if (closingIndex >= 0) {
+        segment = line.substring(0, closingIndex).trim()
+        if (segment) {
+          buffer.add(segment)
+        }
+        applyListContent(currentName, buffer)
+        mode = "default"
+        currentName = null
+        buffer = []
+        continue
+      }
+      buffer.add(line)
+      continue
+    }
+
+    if (!line || line.startsWith("#")) {
+      continue
+    }
+
+    if (line.startsWith("declare -A ")) {
+      prefix = "declare -A "
+      body = line.substring(prefix.length()).trim()
+      name = body
+      remainder = ""
+      eqIndex = body.indexOf("=")
+      if (eqIndex >= 0) {
+        name = body.substring(0, eqIndex).trim()
+        remainder = body.substring(eqIndex + 1).trim()
+      }
+      if (!remainder) {
+        applyAssoc(name, [])
+        continue
+      }
+      if (!remainder.startsWith("(")) {
+        applyAssoc(name, [])
+        continue
+      }
+      remainder = remainder.substring(1)
+      closingIndex = remainder.indexOf(")")
+      if (closingIndex >= 0) {
+        segment = remainder.substring(0, closingIndex)
+        rows = splitLines(segment)
+        applyAssoc(name, rows)
+        continue
+      }
+      currentName = name
+      mode = "map"
+      buffer = []
+      initial = remainder.trim()
+      if (initial) {
+        buffer.add(initial)
+      }
+      continue
+    }
+
+    eqIndex = line.indexOf("=")
+    if (eqIndex < 0) {
+      continue
+    }
+
+    name = line.substring(0, eqIndex).trim()
+    valuePart = line.substring(eqIndex + 1).trim()
+
+    if (valuePart.startsWith("(")) {
+      remainder = valuePart.substring(1)
+      closingIndex = remainder.indexOf(")")
+      if (closingIndex >= 0) {
+        segment = remainder.substring(0, closingIndex)
+        values = parseListContent(segment)
+        applyListValues(name, values)
+        continue
+      }
+      currentName = name
+      mode = "list"
+      buffer = []
+      initial = remainder.trim()
+      if (initial) {
+        buffer.add(initial)
+      }
+      continue
+    }
+
+    value = parseScalar(valuePart)
+    applyScalarValue(name, value)
+  }
+}
+
+private def applyAssoc(name, rows) {
+  if (!name) {
+    return
+  }
+  entry = ensureStepEntry(name)
+  valuesMap = entry.get("values")
+
+  for (row in rows) {
+    trimmed = row.trim()
+    if (!trimmed) {
+      continue
+    }
+    if (trimmed.endsWith(",")) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1).trim()
+    }
+    if (!trimmed.startsWith("[")) {
+      continue
+    }
+    closeIndex = trimmed.indexOf("]")
+    if (closeIndex < 0) {
+      continue
+    }
+    key = trimmed.substring(1, closeIndex).trim()
+    remainder = trimmed.substring(closeIndex + 1).trim()
+    if (remainder.startsWith("=")) {
+      remainder = remainder.substring(1).trim()
+    }
+    value = parseScalar(remainder)
+    valuesMap.put(key, value)
+  }
+}
+
+private def applyListContent(name, rows) {
+  content = ""
+  for (row in rows) {
+    trimmed = row.trim()
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue
+    }
+    if (content) {
+      content = content + "\n"
+    }
+    content = content + trimmed
+  }
+  values = parseListContent(content)
+  applyListValues(name, values)
+}
+
+private def applyScalarValue(name, value) {
+  if (!name) {
+    return
+  }
+  if (name.endsWith("_enabled")) {
+    stepKey = name.substring(0, name.length() - "_enabled".length())
+    entry = ensureStepEntry(stepKey)
+    entry.put("enabled", coerceBoolean(value, true))
+    return
+  }
+
+  split = splitStepAndField(name)
+  if (split) {
+    stepKey = split.get(0)
+    field = split.get(1)
+    entry = ensureStepEntry(stepKey)
+    entry.get("values").put(field, value)
+    return
+  }
+
+  configData.get("globals").put(name, value)
+}
+
+private def applyListValues(name, values) {
+  if (!name) {
+    return
+  }
+  split = splitStepAndField(name)
+  if (split) {
+    stepKey = split.get(0)
+    field = split.get(1)
+    entry = ensureStepEntry(stepKey)
+    entry.get("lists").put(field, cloneList(values))
+    return
+  }
+  configData.get("globals").put(name, cloneList(values))
+}
+
+private def ensureStepEntry(stepKey) {
+  steps = configData.get("steps")
+  if (!steps.containsKey(stepKey)) {
+    steps.put(stepKey, {
+      enabled: null,
+      values: {},
+      lists: {},
+    })
+  }
+  return steps.get(stepKey)
+}
+
+private def splitStepAndField(name) {
+  index = name.indexOf("_")
+  if (index <= 0) {
+    return null
+  }
+  stepKey = name.substring(0, index)
+  field = name.substring(index + 1)
+  if (!field) {
+    return null
+  }
+  parts = []
+  parts.add(stepKey)
+  parts.add(field)
+  return parts
+}
+
+private def parseScalar(text) {
+  if (!text) {
+    return null
+  }
+  trimmed = text.trim()
+  if (!trimmed) {
+    return null
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    inner = trimmed.substring(1, trimmed.length() - 1)
+    return unescape(inner)
+  }
+  if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+    inner = trimmed.substring(1, trimmed.length() - 1)
+    return unescape(inner)
+  }
+  lower = trimmed.toLowerCase()
+  if (lower == "true") {
+    return true
+  }
+  if (lower == "false") {
+    return false
+  }
+  return trimmed
+}
+
+private def parseListContent(content) {
+  values = []
+  if (!content) {
+    return values
+  }
+
+  chars = content.split("")
+  buffer = ""
+  quote = ""
+  escape = false
+
+  for (ch in chars) {
+    if (!ch) {
+      continue
+    }
+    if (escape) {
+      buffer = buffer + ch
+      escape = false
+      continue
+    }
+    if (quote) {
+      if (ch == "\\") {
+        escape = true
+        continue
+      }
+      if (ch == quote) {
+        values.add(buffer)
+        buffer = ""
+        quote = ""
+        continue
+      }
+      buffer = buffer + ch
+      continue
+    }
+    if (ch == "'" || ch == "\"") {
+      if (buffer.trim()) {
+        values.add(buffer.trim())
+        buffer = ""
+      } else {
+        buffer = ""
+      }
+      quote = ch
+      continue
+    }
+    if (ch == " " || ch == "\t" || ch == "\n" || ch == ",") {
+      if (buffer.trim()) {
+        values.add(buffer.trim())
+        buffer = ""
+      } else {
+        buffer = ""
+      }
+      continue
+    }
+    buffer = buffer + ch
+  }
+
+  if (buffer.trim()) {
+    values.add(buffer.trim())
+  }
+
+  cleaned = []
+  for (value in values) {
+    cleaned.add(unescape(value))
+  }
+  return cleaned
+}
+
+private def unescape(text) {
+  if (!text) {
+    return ""
+  }
+  result = text.replace("\\'", "'")
+  result = result.replace("\\\"", "\"")
+  result = result.replace("\\n", "\n")
+  result = result.replace("\\t", "\t")
+  return result
+}
+
+private def splitLines(content) {
+  rows = []
+  if (!content) {
+    return rows
+  }
+  for (line in content.split("\n")) {
+    trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue
+    }
+    rows.add(trimmed)
+  }
+  return rows
+}
+
+private def cloneList(source) {
+  copy = []
+  if (!source) {
+    return copy
+  }
+  for (item in source) {
+    copy.add(item)
+  }
+  return copy
+}
+
+private def cloneMap(source) {
+  copy = {}
+  if (!source) {
+    return copy
+  }
+  for (key in source.keySet()) {
+    copy.put(key, source.get(key))
+  }
+  return copy
+}
+
+private def cloneListMap(source) {
+  copy = {}
+  if (!source) {
+    return copy
+  }
+  for (key in source.keySet()) {
+    copy.put(key, cloneList(source.get(key)))
+  }
+  return copy
+}
+
+private def cloneStepsMap() {
+  copy = {}
+  steps = configData.get("steps")
+  if (!steps) {
+    return copy
+  }
+  for (key in steps.keySet()) {
+    copy.put(key, stepView(steps.get(key)))
+  }
+  return copy
+}
+
+private def stepView(entry) {
+  view = {}
+  if (!entry) {
+    return view
+  }
+  enabled = entry.get("enabled")
+  if (enabled == null) {
+    enabled = true
+  }
+  view.put("enabled", enabled)
+  valuesMap = entry.get("values")
+  if (valuesMap) {
+    for (key in valuesMap.keySet()) {
+      view.put(key, valuesMap.get(key))
+    }
+  }
+  listsMap = entry.get("lists")
+  if (listsMap) {
+    for (key in listsMap.keySet()) {
+      view.put(key, cloneList(listsMap.get(key)))
+    }
+  }
+  return view
+}
+
+private def splitPath(path) {
+  tokens = path.split("\\.")
+  pieces = []
+  for (token in tokens) {
+    part = token.trim()
+    if (!part) {
+      continue
+    }
+    pieces.add(part)
+  }
+  if (!pieces) {
+    return null
+  }
+  return pieces
+}
+
+private def joinSegments(segments, start) {
+  if (!segments) {
+    return null
+  }
+  if (start >= segments.size()) {
+    return null
+  }
+  value = ""
+  index = 0
+  for (segment in segments) {
+    if (index >= start) {
+      if (value) {
+        value = value + "."
+      }
+      value = value + segment
+    }
+    index = index + 1
+  }
+  return value
+}
+
+private def escapeSingleQuotes(text) {
+  if (!text) {
+    return ""
+  }
+  return text.replace("'", "'\"'\"'")
 }

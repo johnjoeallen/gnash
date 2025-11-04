@@ -76,5 +76,7 @@ def dumpStepSnapshot(stepKey) {
         return
     }
     println("${stepKey} snapshot:")
-    println(snapshot)
+    for (key in snapshot.keySet()) {
+        println("  ${key}: ${snapshot.get(key)}")
+    }
 }
