@@ -1,0 +1,2 @@
+src/gnash/*.gnash linguist-language=Groovy
+*.gnash linguist-language=Groovy

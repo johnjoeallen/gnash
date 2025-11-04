@@ -1,0 +1,13 @@
+package lib
+
+// Temporary runtime bridge used during the Gnash to Bash transition.
+
+public def invoke(target, args) {
+  println("invoke stub: ${target} -> ${args}")
+  return null
+}
+
+public def call(target, args) {
+  println("call stub: ${target} -> ${args}")
+  return null
+}
