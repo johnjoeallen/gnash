@@ -27,6 +27,6 @@ java -cp "${ROOT_DIR}/target/classes:${CLASSPATH}" \
   dev.gnash.compiler.GnashCompiler "${INSPECT_SOURCE}" "${INSPECT_OUTPUT}"
 
 echo "[gnash] executing InspectConfig..."
-bash "${INSPECT_OUTPUT}"
+bash -c "source '${ROOT_DIR}/scripts/runtime/config-runtime.sh'; source '${INSPECT_OUTPUT}'"
 
 echo "[gnash] inspect run complete."
