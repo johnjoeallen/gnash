@@ -1,8 +1,8 @@
 package scripts
 
-public def main(args) {
-    __gnash_load_rc()
+import lib.Config
 
+public def main(args) {
     println("== Step Status ==")
     dumpStepStatus("adminGroupNopass")
     dumpStepStatus("dockerGroup")
@@ -28,14 +28,14 @@ public def main(args) {
 
 def dumpStepStatus(stepKey) {
     status = "disabled"
-    if (__gnash_config_step_enabled(stepKey)) {
+    if (Config.isTrueOrDefault("steps.${stepKey}.enabled", true)) {
         status = "enabled"
     }
     println("${stepKey}: ${status}")
 }
 
 def dumpStepValue(stepKey, field) {
-    value = __gnash_config_step_value(stepKey, field)
+    value = Config.get("steps.${stepKey}.${field}")
     if (!value) {
         println("${stepKey}.${field}: <empty>")
         return
@@ -44,11 +44,16 @@ def dumpStepValue(stepKey, field) {
 }
 
 def dumpList(stepKey, field) {
-    token = __gnash_config_step_list(stepKey, field)
-    if (token is List) {
+    value = Config.get("steps.${stepKey}.${field}")
+    if (!value) {
+        println("${stepKey}.${field} raw: []")
+        println("  (no entries)")
+        return
+    }
+    if (value is List) {
         println("${stepKey}.${field} raw: <list>")
         entryPrinted = ""
-        for (entry in token) {
+        for (entry in value) {
             println("  - ${entry}")
             entryPrinted = "yes"
         }
@@ -57,11 +62,6 @@ def dumpList(stepKey, field) {
         }
         return
     }
-    if (token) {
-        println("${stepKey}.${field} raw: [${token}]")
-        println("  - ${token}")
-    } else {
-        println("${stepKey}.${field} raw: []")
-        println("  (no entries)")
-    }
+    println("${stepKey}.${field} raw: [${value}]")
+    println("  - ${value}")
 }

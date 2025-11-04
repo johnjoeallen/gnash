@@ -1,0 +1,255 @@
+// ----------------------------------------------------------------------------
+// Gnash YAML-lite config loader + query API
+// Grammar-conformant: uses package/import/def, blocks, if/for, literals, maps/lists,
+// builtin printf (no SHELL_CMD for logging), and method-style map ops.
+// ----------------------------------------------------------------------------
+
+package gnash.config
+
+import gnash.fs
+import gnash.env
+import gnash.str
+
+// Global flattened config map
+CONFIG = {}
+
+// ---------- logging -----------------------------------------------------------
+
+def log(msg) {
+  printf("[gnash:config] %s\n", msg)
+}
+
+def dbg(msg) {
+  if (gnash.env.get("GNASH_DEBUG") == "1") {
+    printf("[gnash:debug] %s\n", msg)
+  }
+}
+
+// ---------- helpers -----------------------------------------------------------
+
+def trimQuotes(s) {
+  if (s == null) { return "" }
+  if (gnash.str.startsWith(s, "\"") && gnash.str.endsWith(s, "\"")) {
+    return gnash.str.slice(s, 1, gnash.str.length(s) - 1)
+  }
+  if (gnash.str.startsWith(s, "'") && gnash.str.endsWith(s, "'")) {
+    return gnash.str.slice(s, 1, gnash.str.length(s) - 1)
+  }
+  return s
+}
+
+def leadingSpaces(s) {
+  if (s == null) { return 0 }
+  len = gnash.str.length(s)
+  i = 0
+  while (i < len && gnash.str.charAt(s, i) == " ") {
+    i = i + 1
+  }
+  return i
+}
+
+def normalize(line) {
+  x = gnash.str.replace(line, "\r", "")
+  x = gnash.str.replace(x, "\t", "  ")
+  return gnash.str.rstrip(x)
+}
+
+def stripComment(line) {
+  if (gnash.str.contains(line, "#")) {
+    return gnash.str.split(line, "#", 1)
+  }
+  return line
+}
+
+def keyJoin(a, b) {
+  return gnash.str.concat(a, gnash.str.concat(".", b))
+}
+
+def idxKey(prefix, i) {
+  return gnash.str.concat(prefix, gnash.str.concat("[", gnash.str.concat(gnash.str.toString(i), "]")))
+}
+
+// ---------- loader (first→last, last overrides) ------------------------------
+
+def load(files) {
+  if (files == null || gnash.str.length(files) == 0) {
+    log("load: need at least one file")
+    return
+  }
+
+  section = ""
+  key = ""
+  keyIndent = -1
+  idx = 0
+
+  for (f in files) {
+    if (!gnash.fs.exists(f)) {
+      log(gnash.str.concat("warn: file not found: ", f))
+      continue
+    }
+    log(gnash.str.concat("load: ", f))
+
+    section = ""
+    key = ""
+    keyIndent = -1
+    idx = 0
+
+    lines = gnash.fs.lines(f)
+    for (raw in lines) {
+      L = normalize(raw)
+      L = stripComment(L)
+      if (gnash.str.trim(L) == "") { continue }
+
+      indent = leadingSpaces(L)
+      trimmed = gnash.str.slice(L, indent, gnash.str.length(L))
+
+      // SECTION (indent==0): "name:"
+      if (indent == 0 && gnash.str.endsWith(trimmed, ":")) {
+        name = gnash.str.slice(trimmed, 0, gnash.str.length(trimmed) - 1)
+        name = gnash.str.trim(name)
+        section = name
+        dbg(gnash.str.concat("section=", section))
+        key = ""
+        keyIndent = -1
+        idx = 0
+        continue
+      }
+
+      // KEY line (indent>0): "key:" or "key: value"
+      if (indent > 0 && section != "" && gnash.str.contains(trimmed, ":")) {
+        colon = gnash.str.indexOf(trimmed, ":")
+        k = gnash.str.slice(trimmed, 0, colon)
+        v = gnash.str.slice(trimmed, colon + 1, gnash.str.length(trimmed))
+        k = gnash.str.trim(k)
+        v = trimQuotes(gnash.str.trim(v))
+
+        CONFIG.put(keyJoin(section, k), v)
+        key = k
+        keyIndent = indent
+        idx = 0
+        dbg(gnash.str.concat("set ", gnash.str.concat(keyJoin(section, k), gnash.str.concat("=", v))))
+        continue
+      }
+
+      // LIST item (indent deeper than key): "- item"
+      if (indent > keyIndent && section != "" && key != "" && gnash.str.startsWith(gnash.str.trim(trimmed), "-")) {
+        t = gnash.str.trim(trimmed)
+        item = gnash.str.slice(t, 1, gnash.str.length(t))
+        item = trimQuotes(gnash.str.trim(item))
+
+        base = keyJoin(section, key)
+        CONFIG.put(idxKey(base, idx), item)
+        dbg(gnash.str.concat("push ", gnash.str.concat(idxKey(base, idx), gnash.str.concat("=", item))))
+        idx = idx + 1
+        continue
+      }
+
+      dbg(gnash.str.concat("skip: '", gnash.str.concat(raw, "'")))
+    }
+  }
+
+  printf("[gnash:config] parsed: %s keys\n", gnash.str.toString(CONFIG.size()))
+  return CONFIG
+}
+
+// Conventional discovery and load
+def autoLoad() {
+  files = []
+
+  p = gnash.env.get("GNASH_CONFIG")
+  if (p != null && gnash.fs.exists(p)) {
+    files = [ p ]
+  }
+
+  if (gnash.fs.exists("./gnash.cfg")) {
+    files = files + [ "./gnash.cfg" ]
+  }
+
+  home = gnash.env.get("HOME")
+  if (home != null) {
+    userCfg = gnash.str.concat(home, "/.config/gnash/gnash.cfg")
+    if (gnash.fs.exists(userCfg)) {
+      files = files + [ userCfg ]
+    }
+  }
+
+  host = gnash.env.get("HOSTNAME")
+  if (host == null) {
+    host = $"hostname -s"
+  }
+  hostFile = gnash.str.concat("./", gnash.str.concat(host, ".cfg"))
+  if (gnash.fs.exists(hostFile)) {
+    files = files + [ hostFile ]
+  }
+
+  if (gnash.str.length(files) == 0) {
+    log("autoLoad: no config files found")
+    return {}
+  }
+
+  return load(files)
+}
+
+// Returns true if any indexed entries exist for the base key, e.g. "users[0]"
+def isList(key) {
+  for (k in CONFIG.keys()) {
+    if (gnash.str.startsWith(k, gnash.str.concat(key, "["))) {
+      return true
+    }
+  }
+  return false
+}
+
+// Returns true if a scalar value exists for the exact key and it's not a list
+def isScalar(key) {
+  if (CONFIG.get(key) != null && !isList(key)) {
+    return true
+  }
+  return false
+}
+
+// Optional: number of items in a list (0 if not a list)
+def listLen(key) {
+  if (!isList(key)) { return 0 }
+  n = 0
+  for (k in CONFIG.keys()) {
+    if (gnash.str.startsWith(k, gnash.str.concat(key, "["))) {
+      n = n + 1
+    }
+  }
+  return n
+}
+
+// ---------- query API ---------------------------------------------------------
+
+def get(k) {
+  v = CONFIG.get(k)
+  if (v != null) { return v }
+  return null
+}
+
+def bool(k) {
+  v = get(k)
+  if (v == null) { return false }
+  lo = gnash.str.lower(v)
+  return lo == "true" || lo == "1" || lo == "yes" || lo == "on"
+}
+
+def list(prefix) {
+  out = []
+  for (k in CONFIG.keys()) {
+    if (gnash.str.startsWith(k, gnash.str.concat(prefix, "["))) {
+      out = out + [ CONFIG.get(k) ]
+    }
+  }
+  return out
+}
+
+def dump() {
+  lines = []
+  for (k in CONFIG.keys()) {
+    lines = lines + [ gnash.str.concat(k, gnash.str.concat("=", CONFIG.get(k))) ]
+  }
+  // If sort is not available in runtime, return unsorted
+  return gnash.str.sort(lines)
+}

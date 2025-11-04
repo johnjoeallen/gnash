@@ -118,60 +118,259 @@ __gnash_load_rc() {
   fi
 }
 
-__gnash_config_step_enabled() {
-  local key="$1"
-  local var="${key}_enabled"
-  local value="${!var:-}"
-  if [[ -z "$value" ]]; then
+__gnash_config_resolve() {
+  local __gnash_dest="$1"
+  local path="${2:-}"
+  if [[ -z "$__gnash_dest" || -z "$path" ]]; then
+    return 1
+  fi
+
+  local root="${path%%.*}"
+  local remainder=""
+  if [[ "$path" == "$root" ]]; then
+    remainder=""
+  else
+    remainder="${path#${root}.}"
+  fi
+
+  case "$root" in
+    steps)
+      if __gnash_config_resolve_step "$__gnash_dest" "$remainder"; then
+        return 0
+      fi
+      ;;
+    globals)
+      if __gnash_config_resolve_global "$__gnash_dest" "$remainder"; then
+        return 0
+      fi
+      ;;
+    *)
+      if __gnash_config_resolve_global "$__gnash_dest" "$path"; then
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
+__gnash_config_resolve_step() {
+  local __gnash_dest="$1"
+  local remainder="${2:-}"
+  if [[ -z "$__gnash_dest" || -z "$remainder" ]]; then
+    return 1
+  fi
+
+  local step="${remainder%%.*}"
+  if [[ -z "$step" ]]; then
+    return 1
+  fi
+
+  local field=""
+  if [[ "$remainder" == "$step" ]]; then
+    field=""
+  else
+    field="${remainder#${step}.}"
+  fi
+  if [[ -z "$field" ]]; then
+    return 1
+  fi
+
+  local assoc="${step}"
+  if declare -p "$assoc" &>/dev/null; then
+    # shellcheck disable=SC2178
+    local -n ref="$assoc"
+    if [[ "$field" == "enabled" && -n "${ref[enabled]+_}" ]]; then
+      printf -v "$__gnash_dest" '%s' "${ref[enabled]}"
+      return 0
+    fi
+    if [[ -n "${ref[$field]+_}" ]]; then
+      printf -v "$__gnash_dest" '%s' "${ref[$field]}"
+      return 0
+    fi
+  fi
+
+  local normalized_field="${field//./_}"
+  local array_name="${step}_${normalized_field}"
+  if declare -p "$array_name" &>/dev/null; then
+    local __gnash_tmp_token=""
+    __gnash_list_from_array __gnash_tmp_token "$array_name"
+    printf -v "$__gnash_dest" '%s' "$__gnash_tmp_token"
     return 0
   fi
-  __gnash_bool_truthy "$value"
+
+  local var="${step}_${normalized_field}"
+  if [[ -n "${!var+_}" ]]; then
+    printf -v "$__gnash_dest" '%s' "${!var}"
+    return 0
+  fi
+
+  if [[ "$field" == "enabled" ]]; then
+    printf -v "$__gnash_dest" '%s' "true"
+    return 0
+  fi
+
+  return 1
+}
+
+__gnash_config_resolve_global() {
+  local __gnash_dest="$1"
+  local key="${2:-}"
+  if [[ -z "$__gnash_dest" || -z "$key" ]]; then
+    return 1
+  fi
+
+  local var="${key//./_}"
+  if [[ -n "${!var+_}" ]]; then
+    printf -v "$__gnash_dest" '%s' "${!var}"
+    return 0
+  fi
+
+  return 1
+}
+
+__gnash_config_get() {
+  local path="$1"
+  local default_value="${2:-}"
+  local have_default=0
+  if (( $# >= 2 )); then
+    have_default=1
+  fi
+  local __gnash_value=""
+  if __gnash_config_resolve "__gnash_value" "$path"; then
+    printf '%s' "$__gnash_value"
+    return 0
+  fi
+  if (( have_default )); then
+    printf '%s' "$default_value"
+  fi
+  return 1
+}
+
+__gnash_config_get_or_default() {
+  if (( $# < 2 )); then
+    return 1
+  fi
+  __gnash_config_get "$1" "$2"
+}
+
+__gnash_config_list() {
+  local __gnash_out_var=""
+  local path=""
+  if (( $# == 2 )); then
+    __gnash_out_var="$1"
+    path="$2"
+  else
+    path="$1"
+  fi
+  local __gnash_token=""
+  local __gnash_value=""
+  if __gnash_config_resolve "__gnash_value" "$path"; then
+    if __gnash_is_list "$__gnash_value"; then
+      __gnash_token="$__gnash_value"
+    elif [[ -z "$__gnash_value" ]]; then
+      __gnash_list_empty __gnash_token
+    else
+      __gnash_list_from_value __gnash_token "$__gnash_value"
+    fi
+  else
+    __gnash_list_empty __gnash_token
+  fi
+  if [[ -n "$__gnash_out_var" ]]; then
+    printf -v "$__gnash_out_var" '%s' "$__gnash_token"
+  else
+    printf '%s' "$__gnash_token"
+  fi
+}
+
+__gnash_config_is_true_or_default() {
+  local path="$1"
+  local default_value="${2:-false}"
+  local __gnash_value=""
+  if __gnash_config_resolve "__gnash_value" "$path"; then
+    if [[ -z "$__gnash_value" ]]; then
+      __gnash_bool_truthy "$default_value"
+      return
+    fi
+    __gnash_bool_truthy "$__gnash_value"
+    return
+  fi
+  __gnash_bool_truthy "$default_value"
+}
+
+__gnash_config_is_true() {
+  __gnash_config_is_true_or_default "$1" "false"
+}
+
+__gnash_config_is_true_value_or_default() {
+  if __gnash_config_is_true_or_default "$1" "$2"; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+__gnash_config_is_true_value() {
+  if __gnash_config_is_true "$1"; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+__gnash_config_is_set() {
+  local path="$1"
+  local __gnash_value=""
+  if __gnash_config_resolve "__gnash_value" "$path"; then
+    return 0
+  fi
+  return 1
+}
+
+__gnash_config_is_set_value() {
+  if __gnash_config_is_set "$1"; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+__gnash_config_step_enabled() {
+  local key="$1"
+  local path="steps.${key}.enabled"
+  __gnash_config_is_true_or_default "$path" "true"
 }
 
 __gnash_config_step_value() {
   local key="$1"
   local field="$2"
-  local assoc="${key}"
-  if declare -p "$assoc" &>/dev/null; then
-    # shellcheck disable=SC2178
-    local -n ref="$assoc"
-    printf '%s' "${ref[$field]:-}"
-    return
-  fi
-  local var="${key}_${field}"
-  printf '%s' "${!var:-}"
+  local path="steps.${key}.${field}"
+  __gnash_config_get "$path"
 }
 
 __gnash_config_step_list() {
-  local __gnash_out_var=""
-  local key
-  local field
   if (( $# == 3 )); then
-    __gnash_out_var="$1"
-    key="$2"
-    field="$3"
+    local out="$1"
+    local key="$2"
+    local field="$3"
+    local path="steps.${key}.${field}"
+    __gnash_config_list "$out" "$path"
   else
-    key="$1"
-    field="$2"
+    local key="$1"
+    local field="$2"
+    local path="steps.${key}.${field}"
+    __gnash_config_list "$path"
   fi
-  local array_name="${key}_${field}"
-  local __gnash_tmp_list=""
-  if declare -p "$array_name" &>/dev/null; then
-    __gnash_list_from_array __gnash_tmp_list "$array_name"
+}
+
+__gnash_config_step_boolean() {
+  local key="$1"
+  local field="$2"
+  local default_value="${3:-false}"
+  local path="steps.${key}.${field}"
+  if __gnash_config_is_true_or_default "$path" "$default_value"; then
+    printf 'true'
   else
-    local value="$(__gnash_config_step_value "$key" "$field")"
-    if [[ -z "$value" ]]; then
-      __gnash_list_empty __gnash_tmp_list
-    else
-      local -a __tmp_values=()
-      IFS=',' read -r -a __tmp_values <<<"$value"
-      __gnash_list_from_array __gnash_tmp_list __tmp_values
-    fi
-  fi
-  if [[ -n "$__gnash_out_var" ]]; then
-    printf -v "$__gnash_out_var" '%s' "${__gnash_tmp_list}"
-  else
-    printf '%s' "${__gnash_tmp_list}"
+    printf 'false'
   fi
 }
 
@@ -491,7 +690,6 @@ gnash_fn_main() {
   local __gnash_out="${1:-}"
   local __gnash_ret=""
   local args="${2:-}"
-  __gnash_load_rc
   echo "== Step Status =="
   __gnash_invoke 'dumpStepStatus' "adminGroupNopass"
   __gnash_invoke 'dumpStepStatus' "dockerGroup"
@@ -516,7 +714,7 @@ gnash_fn_dumpStepStatus() {
   local step_key="${2:-}"
   local status
   status="disabled"
-  if __gnash_config_step_enabled "${step_key}"; then
+  if __gnash_config_is_true_or_default "steps.${step_key}.enabled" 1; then
     status="enabled"
   fi
   echo "${step_key}: ${status}"
@@ -528,7 +726,7 @@ gnash_fn_dumpStepValue() {
   local step_key="${2:-}"
   local field="${3:-}"
   local value
-  value=$(__gnash_config_step_value "${step_key}" "${field}")
+  value=$(__gnash_config_get "steps.${step_key}.${field}")
   if ! [[ -n ${value:-} ]]; then
     echo "${step_key}.${field}: <empty>"
     return
@@ -541,14 +739,19 @@ gnash_fn_dumpList() {
   local __gnash_ret=""
   local step_key="${2:-}"
   local field="${3:-}"
-  local token
-  token=$(__gnash_config_step_list "${step_key}" "${field}")
-  if __gnash_is_list "${token}"; then
+  local value
+  value=$(__gnash_config_get "steps.${step_key}.${field}")
+  if ! [[ -n ${value:-} ]]; then
+    echo "${step_key}.${field} raw: []"
+    echo "  (no entries)"
+    return
+  fi
+  if __gnash_is_list "${value}"; then
     echo "${step_key}.${field} raw: <list>"
     local entry_printed
     entry_printed=""
     local -a __gnash_items1=()
-    __gnash_list_to_array "__gnash_items1" "${token}"
+    __gnash_list_to_array "__gnash_items1" "${value}"
     for entry in "${__gnash_items1[@]}"; do
       echo "  - ${entry}"
       entry_printed="yes"
@@ -558,13 +761,8 @@ gnash_fn_dumpList() {
     fi
     return
   fi
-  if [[ -n ${token:-} ]]; then
-    echo "${step_key}.${field} raw: [${token}]"
-    echo "  - ${token}"
-  else
-    echo "${step_key}.${field} raw: []"
-    echo "  (no entries)"
-  fi
+  echo "${step_key}.${field} raw: [${value}]"
+  echo "  - ${value}"
 }
 
 gnash_fn_main "" "$@"

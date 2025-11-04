@@ -7,9 +7,10 @@ package lib
  *   Config.get("steps.sdkmanJava.defaultJava")
  *   Config.get("steps.sdkmanJava.")            // returns map of fields
  *   Config.isTrue("steps.adminGroupNopass.enabled")
+ *   Config.isSet("steps.dockerGroup.users")
  *   Config.list("steps.essentials.packages")
  *
- * Step-oriented helpers remain available for existing scripts via
+ * Step-oriented helpers remain available for legacy scripts via
  * Config.stepEnabled/value/list/boolean/string.
  */
 
@@ -36,6 +37,11 @@ public def isTrue(path) {
 public def isTrueOrDefault(path, defaultValue) {
   value = resolve(path, null)
   return coerceBoolean(value, defaultValue)
+}
+
+public def isSet(path) {
+  value = resolve(path, null)
+  return value != null
 }
 
 public def list(path) {

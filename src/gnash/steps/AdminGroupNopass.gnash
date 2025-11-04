@@ -14,19 +14,20 @@ import lib.Config
 // orchestration layers can record the mutation when this script is executed.
 public def main(args) {
   stepKey = "adminGroupNopass"
-  if (!Config.stepEnabled(stepKey)) {
+  stepPath = "steps.${stepKey}"
+  if (!Config.isTrueOrDefault("${stepPath}.enabled", true)) {
     println("${stepKey} disabled via configuration")
     return 0
   }
 
-  adminGroup = normalizedString(Config.stepValue(stepKey, "adminGroup"))
+  adminGroup = normalizedString(Config.get("${stepPath}.adminGroup"))
   if (!adminGroup) {
     adminGroup = "admin"
   }
 
-  addCurrentUser = Config.boolean(stepKey, "addCurrentUser", true)
+  addCurrentUser = Config.isTrueOrDefault("${stepPath}.addCurrentUser", true)
 
-  users = collectUsers(Config.stepList(stepKey, "users"))
+  users = collectUsers(Config.list("${stepPath}.users"))
   if (addCurrentUser) {
     // Augment configured users with the interactive account when the step runs via sudo.
     currentUser = firstNonBlank(env("SUDO_USER"), env("USER"))
