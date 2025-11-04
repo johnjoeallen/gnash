@@ -1,0 +1,194 @@
+#!/usr/bin/env gnash
+
+package scripts.demo
+
+import lib.Runtime
+
+/*
+ * Gnash Syntax Showcase
+ * Demonstrates the language constructs defined in grammar/Gnash.g4.
+ */
+
+println("scripts.demo.SyntaxShowcase initialising")
+
+demoState = {
+  title: "Gnash Syntax Showcase",
+  enabled: true,
+  tags: ["syntax", "demo", "examples"],
+  "display.name": "Gnash Syntax Showcase",
+}
+
+public def main(args) {
+  println("== Gnash Syntax Showcase ==")
+
+  optionalAnnouncement(demoState.get("enabled"))
+
+  baseline = computeBaseline(5)
+  println("Baseline from static helper: ${baseline}")
+
+  showConditionals(baseline)
+  showLooping()
+  showCollections()
+  showLogicOperators()
+  showShellIntegration()
+  showTryCatch()
+
+  emphasise("Demonstration complete")
+
+  response = invoke("noop", ["argument"])
+  println("Runtime.invoke stub returns: ${response}")
+
+  return 0
+}
+
+private static def computeBaseline(seed) {
+  adjustment = 2
+  metrics = {
+    start: seed,
+    offset: adjustment,
+  }
+  result = metrics.get("start") + metrics.get("offset")
+  return result
+}
+
+private def showConditionals(seed) {
+  println("-- Conditionals --")
+  if (seed > 10) {
+    println("Seed greater than ten")
+  } else if (seed == 10) {
+    println("Seed equals ten")
+  } else {
+    println("Seed less than ten")
+  }
+
+  inRange = seed >= 5 && seed < 20
+  println("Seed between 5 and 20: ${inRange}")
+
+  doubleSeed = seed * 2
+  halfSeed = seed / 2
+  println("Arithmetic: double = ${doubleSeed}, half = ${halfSeed}")
+
+  remainder = seed % 3
+  println("Modulo example: ${remainder}")
+
+  negative = -seed
+  positive = +seed
+  println("Unary operators: negative = ${negative}, positive = ${positive}")
+
+  return seed
+}
+
+private def showLooping() {
+  println("-- Looping --")
+  numbers = [1, 2, 3, 4, 5]
+  total = 0
+
+  for (number in numbers) {
+    if (number % 2 == 0) {
+      // continue skips even values to highlight loop control.
+      continue
+    }
+    total = total + number
+    if (total >= 7) {
+      break
+    }
+  }
+
+  println("Odd total before break: ${total}")
+}
+
+private def showCollections() {
+  println("-- Collections --")
+
+  nestedMap = {
+    count: 3,
+    extras: { note: "Nested map literal", },
+  }
+
+  tags = demoState.get("tags")
+  if (tags is List) {
+    tags.add("walkthrough")
+    if (!tags.contains("syntax")) {
+      tags.add("syntax")
+    }
+  }
+
+  emptyList = []
+  emptyMap = {}
+  println("Empty list literal: ${emptyList}, empty map literal: ${emptyMap}")
+
+  extras = nestedMap.get("extras")
+  note = extras.get("note")
+  println("Nested map extras note: ${note}")
+
+  displayKey = "display.name"
+  if (demoState.containsKey(displayKey)) {
+    displayName = demoState.get(displayKey)
+    println("Display name from global map: ${displayName}")
+  }
+
+  println("Tags list: ${tags}")
+}
+
+private def showLogicOperators() {
+  println("-- Logic Operators --")
+  truthy = true
+  falsy = false
+
+  result = (truthy && !falsy) || (false && truthy)
+  println("Boolean result: ${result}")
+
+  equality = "demo" == "demo"
+  inequality = 3 != 4
+  println("Equality: ${equality}, inequality: ${inequality}")
+}
+
+private def showShellIntegration() {
+  println("-- Shell Commands --")
+  (output, exitCode) = $"printf 'gnash shell literal demo\n'"
+  println("Shell exit code: ${exitCode}")
+  println("Shell output: ${output.trim()}")
+}
+
+private def showTryCatch() {
+  println("-- Try/Catch/Finally --")
+  try {
+    riskyOperation(null)
+  } catch (err) {
+    messageKey = "message"
+    println("Caught error message: ${err.get(messageKey)}")
+  } finally {
+    println("Finally block executed.")
+  }
+}
+
+private def riskyOperation(value) {
+  if (!value) {
+    throw {
+      kind: "DemoError",
+      message: "Missing value for riskyOperation",
+    }
+  }
+
+  trimmed = value.toString().trim()
+  if (trimmed == "") {
+    throw {
+      kind: "DemoError",
+      message: "Blank value for riskyOperation",
+    }
+  }
+
+  return trimmed
+}
+
+private def optionalAnnouncement(enabled) {
+  if (!enabled) {
+    println("Announcements disabled")
+    return
+  }
+  println("Announcements enabled")
+}
+
+protected def emphasise(text) {
+  println("** " + text + " **")
+}
