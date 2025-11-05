@@ -1,255 +1,368 @@
-// ----------------------------------------------------------------------------
-// Gnash YAML-lite config loader + query API
-// Grammar-conformant: uses package/import/def, blocks, if/for, literals, maps/lists,
-// builtin printf (no SHELL_CMD for logging), and method-style map ops.
-// ----------------------------------------------------------------------------
-
 package gnash.config
 
 import gnash.fs
 import gnash.env
 import gnash.str
 
-// Global flattened config map
+# ==============================================================================
+# GLOBAL STATE
+# ==============================================================================
 CONFIG = {}
+INDEX_MAP = {}
 
-// ---------- logging -----------------------------------------------------------
-
-def log(msg) {
-  printf("[gnash:config] %s\n", msg)
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+def log(message) {
+  printf("[gnash:config] %s\n", message)
 }
 
-def dbg(msg) {
+def debug(message) {
   if (gnash.env.get("GNASH_DEBUG") == "1") {
-    printf("[gnash:debug] %s\n", msg)
+    printf("[gnash:debug] %s\n", message)
   }
 }
 
-// ---------- helpers -----------------------------------------------------------
+# ==============================================================================
+# LIST UTILITIES
+# ==============================================================================
+def listLength(listValue) {
+  return gnash.str.length(listValue)
+}
 
-def trimQuotes(s) {
-  if (s == null) { return "" }
-  if (gnash.str.startsWith(s, "\"") && gnash.str.endsWith(s, "\"")) {
-    return gnash.str.slice(s, 1, gnash.str.length(s) - 1)
+def listPush(listValue, newValue) {
+  return listValue + [ newValue ]
+}
+
+def listPop(listValue) {
+  totalCount = listLength(listValue)
+  if (totalCount == 0) { return [] }
+
+  trimmedList = []
+  index = 0
+  while (index < totalCount - 1) {
+    trimmedList = trimmedList + [ listValue[index] ]
+    index = index + 1
   }
-  if (gnash.str.startsWith(s, "'") && gnash.str.endsWith(s, "'")) {
-    return gnash.str.slice(s, 1, gnash.str.length(s) - 1)
+  return trimmedList
+}
+
+def listLast(listValue) {
+  totalCount = listLength(listValue)
+  if (totalCount == 0) { return null }
+  return listValue[totalCount - 1]
+}
+
+# ==============================================================================
+# STRING HELPERS
+# ==============================================================================
+def trimQuotes(text) {
+  if (text == null) { return "" }
+  size = gnash.str.length(text)
+  if (size < 2) { return text }
+
+  firstChar = gnash.str.slice(text, 0, 1)
+  lastChar  = gnash.str.slice(text, size - 1, size)
+
+  if ((firstChar == "\"" && lastChar == "\"") ||
+      (firstChar == "'"  && lastChar == "'")) {
+    return gnash.str.slice(text, 1, size - 1)
   }
-  return s
+  return text
 }
 
-def leadingSpaces(s) {
-  if (s == null) { return 0 }
-  len = gnash.str.length(s)
-  i = 0
-  while (i < len && gnash.str.charAt(s, i) == " ") {
-    i = i + 1
+def normalize(text) {
+  step = gnash.str.replace(text, "\r", "")
+  step = gnash.str.replace(step, "\t", "  ")
+
+  while (
+    gnash.str.endsWith(step, " ")  ||
+    gnash.str.endsWith(step, "\n") ||
+    gnash.str.endsWith(step, "\r") ||
+    gnash.str.endsWith(step, "\t")
+  ) {
+    step = gnash.str.slice(step, 0, gnash.str.length(step) - 1)
   }
-  return i
+  return step
 }
 
-def normalize(line) {
-  x = gnash.str.replace(line, "\r", "")
-  x = gnash.str.replace(x, "\t", "  ")
-  return gnash.str.rstrip(x)
-}
-
-def stripComment(line) {
-  if (gnash.str.contains(line, "#")) {
-    return gnash.str.split(line, "#", 1)
+def leadingSpaces(text) {
+  if (text == null) { return 0 }
+  index = 0
+  length = gnash.str.length(text)
+  while (index < length && gnash.str.slice(text, index, index + 1) == " ") {
+    index = index + 1
   }
-  return line
+  return index
 }
 
-def keyJoin(a, b) {
-  return gnash.str.concat(a, gnash.str.concat(".", b))
+def stripComment(text) {
+  if (gnash.str.contains(text, "#")) {
+    return gnash.str.split(text, "#", 1)
+  }
+  return text
 }
 
-def idxKey(prefix, i) {
-  return gnash.str.concat(prefix, gnash.str.concat("[", gnash.str.concat(gnash.str.toString(i), "]")))
+def joinDot(left, right) {
+  if (left == "") { return right }
+  return gnash.str.concat(left, gnash.str.concat(".", right))
 }
 
-// ---------- loader (first→last, last overrides) ------------------------------
+# ==============================================================================
+# LIST INDEX MGMT
+# ==============================================================================
+def indexOf(listKey) {
+  current = INDEX_MAP[listKey]
+  if (current == null) { return "0" }
+  return current
+}
 
-def load(files) {
-  if (files == null || gnash.str.length(files) == 0) {
-    log("load: need at least one file")
+def incrementIndex(listKey) {
+  current = indexOf(listKey)
+  numeric = 0
+  pos = 0
+
+  while (pos < gnash.str.length(current)) {
+    digit = gnash.str.slice(current, pos, pos + 1)
+    numeric = numeric * 10 +
+      (digit == "0" ? 0 :
+       digit == "1" ? 1 :
+       digit == "2" ? 2 :
+       digit == "3" ? 3 :
+       digit == "4" ? 4 :
+       digit == "5" ? 5 :
+       digit == "6" ? 6 :
+       digit == "7" ? 7 :
+       digit == "8" ? 8 : 9)
+    pos = pos + 1
+  }
+
+  numeric = numeric + 1
+  INDEX_MAP[listKey] = gnash.str.toString(numeric)
+}
+
+# ==============================================================================
+# YAML-LIKE LOADER (indent stack)
+# ==============================================================================
+def load(fileList) {
+  if (fileList == null || gnash.str.length(fileList) == 0) {
+    log("load: no files provided")
     return
   }
 
-  section = ""
-  key = ""
-  keyIndent = -1
-  idx = 0
+  indentStack = []
+  pathStack   = []
 
-  for (f in files) {
-    if (!gnash.fs.exists(f)) {
-      log(gnash.str.concat("warn: file not found: ", f))
+  for (filePath in fileList) {
+    if (!gnash.fs.exists(filePath)) {
+      log(gnash.str.concat("warn: file not found: ", filePath))
       continue
     }
-    log(gnash.str.concat("load: ", f))
 
-    section = ""
-    key = ""
-    keyIndent = -1
-    idx = 0
+    log(gnash.str.concat("load: ", filePath))
 
-    lines = gnash.fs.lines(f)
-    for (raw in lines) {
-      L = normalize(raw)
-      L = stripComment(L)
-      if (gnash.str.trim(L) == "") { continue }
+    for (rawLine in gnash.fs.lines(filePath)) {
+      lineText = normalize(rawLine)
+      lineText = stripComment(lineText)
 
-      indent = leadingSpaces(L)
-      trimmed = gnash.str.slice(L, indent, gnash.str.length(L))
+      if (gnash.str.trim(lineText) == "") { continue }
 
-      // SECTION (indent==0): "name:"
-      if (indent == 0 && gnash.str.endsWith(trimmed, ":")) {
-        name = gnash.str.slice(trimmed, 0, gnash.str.length(trimmed) - 1)
-        name = gnash.str.trim(name)
-        section = name
-        dbg(gnash.str.concat("section=", section))
-        key = ""
-        keyIndent = -1
-        idx = 0
+      indentLevel = leadingSpaces(lineText)
+      trimmedText = gnash.str.slice(lineText, indentLevel, gnash.str.length(lineText))
+
+      # section "foo:"
+      if (indentLevel == 0 && gnash.str.endsWith(trimmedText, ":")) {
+        sectionName = gnash.str.slice(trimmedText, 0, gnash.str.length(trimmedText) - 1)
+        sectionName = gnash.str.trim(sectionName)
+
+        indentStack = [ "0" ]
+        pathStack   = [ sectionName ]
+        CONFIG[sectionName] = ""
+        debug(gnash.str.concat("section=", sectionName))
         continue
       }
 
-      // KEY line (indent>0): "key:" or "key: value"
-      if (indent > 0 && section != "" && gnash.str.contains(trimmed, ":")) {
-        colon = gnash.str.indexOf(trimmed, ":")
-        k = gnash.str.slice(trimmed, 0, colon)
-        v = gnash.str.slice(trimmed, colon + 1, gnash.str.length(trimmed))
-        k = gnash.str.trim(k)
-        v = trimQuotes(gnash.str.trim(v))
+      # key line "foo:" or "foo: value"
+      if (gnash.str.contains(trimmedText, ":")) {
+        colonPos = gnash.str.indexOf(trimmedText, ":")
+        keyName = gnash.str.trim(gnash.str.slice(trimmedText, 0, colonPos))
+        rawValue = gnash.str.trim(gnash.str.slice(trimmedText, colonPos + 1, gnash.str.length(trimmedText)))
+        value = trimQuotes(rawValue)
 
-        CONFIG.put(keyJoin(section, k), v)
-        key = k
-        keyIndent = indent
-        idx = 0
-        dbg(gnash.str.concat("set ", gnash.str.concat(keyJoin(section, k), gnash.str.concat("=", v))))
+        # pop indent stack as needed
+        while (listLength(indentStack) > 0) {
+          lastIndentStr = listLast(indentStack)
+          lastIndent = 0
+          ii = 0
+          while (ii < gnash.str.length(lastIndentStr)) {
+            digit = gnash.str.slice(lastIndentStr, ii, ii + 1)
+            lastIndent = lastIndent * 10 +
+              (digit == "0" ? 0 :
+               digit == "1" ? 1 :
+               digit == "2" ? 2 :
+               digit == "3" ? 3 :
+               digit == "4" ? 4 :
+               digit == "5" ? 5 :
+               digit == "6" ? 6 :
+               digit == "7" ? 7 :
+               digit == "8" ? 8 : 9)
+            ii = ii + 1
+          }
+
+          if (lastIndent >= indentLevel) {
+            indentStack = listPop(indentStack)
+            pathStack   = listPop(pathStack)
+          } else {
+            break
+          }
+        }
+
+        parentPath = listLast(pathStack)
+        if (parentPath == null) { currentPath = keyName }
+        else { currentPath = joinDot(parentPath, keyName) }
+
+        indentStack = listPush(indentStack, gnash.str.toString(indentLevel))
+        pathStack   = listPush(pathStack, currentPath)
+
+        CONFIG[currentPath] = value
+        if (INDEX_MAP[currentPath] == null) { INDEX_MAP[currentPath] = "0" }
+
+        debug(gnash.str.concat("set ", gnash.str.concat(currentPath, gnash.str.concat("=", value))))
         continue
       }
 
-      // LIST item (indent deeper than key): "- item"
-      if (indent > keyIndent && section != "" && key != "" && gnash.str.startsWith(gnash.str.trim(trimmed), "-")) {
-        t = gnash.str.trim(trimmed)
-        item = gnash.str.slice(t, 1, gnash.str.length(t))
-        item = trimQuotes(gnash.str.trim(item))
+      # list item "- foo"
+      if (gnash.str.startsWith(gnash.str.trim(trimmedText), "-")) {
+        lastIndentStr = listLast(indentStack)
+        li = 0
+        jj = 0
+        while (jj < gnash.str.length(lastIndentStr)) {
+          digit = gnash.str.slice(lastIndentStr, jj, jj + 1)
+          li = li * 10 +
+            (digit == "0" ? 0 :
+             digit == "1" ? 1 :
+             digit == "2" ? 2 :
+             digit == "3" ? 3 :
+             digit == "4" ? 4 :
+             digit == "5" ? 5 :
+             digit == "6" ? 6 :
+             digit == "7" ? 7 :
+             digit == "8" ? 8 : 9)
+          jj = jj + 1
+        }
 
-        base = keyJoin(section, key)
-        CONFIG.put(idxKey(base, idx), item)
-        dbg(gnash.str.concat("push ", gnash.str.concat(idxKey(base, idx), gnash.str.concat("=", item))))
-        idx = idx + 1
-        continue
+        if (indentLevel > li) {
+          txt = gnash.str.trim(trimmedText)
+          itemVal = trimQuotes(gnash.str.trim(gnash.str.slice(txt, 1, gnash.str.length(txt))))
+
+          listKey = listLast(pathStack)
+          listIndex = indexOf(listKey)
+          mapKey = gnash.str.concat(listKey, gnash.str.concat("[", gnash.str.concat(listIndex, "]")))
+          CONFIG[mapKey] = itemVal
+          incrementIndex(listKey)
+          debug(gnash.str.concat("push ", gnash.str.concat(mapKey, gnash.str.concat("=", itemVal))))
+          continue
+        }
       }
 
-      dbg(gnash.str.concat("skip: '", gnash.str.concat(raw, "'")))
+      debug(gnash.str.concat("skip: ", rawLine))
     }
   }
 
-  printf("[gnash:config] parsed: %s keys\n", gnash.str.toString(CONFIG.size()))
-  return CONFIG
+  log(gnash.str.concat("parsed: ", gnash.str.toString(gnash.str.length(CONFIG))))
 }
 
-// Conventional discovery and load
-def autoLoad() {
-  files = []
+# ==============================================================================
+# QUERY API
+# ==============================================================================
+def get(key) { return CONFIG[key] }
 
-  p = gnash.env.get("GNASH_CONFIG")
-  if (p != null && gnash.fs.exists(p)) {
-    files = [ p ]
-  }
-
-  if (gnash.fs.exists("./gnash.cfg")) {
-    files = files + [ "./gnash.cfg" ]
-  }
-
-  home = gnash.env.get("HOME")
-  if (home != null) {
-    userCfg = gnash.str.concat(home, "/.config/gnash/gnash.cfg")
-    if (gnash.fs.exists(userCfg)) {
-      files = files + [ userCfg ]
-    }
-  }
-
-  host = gnash.env.get("HOSTNAME")
-  if (host == null) {
-    host = $"hostname -s"
-  }
-  hostFile = gnash.str.concat("./", gnash.str.concat(host, ".cfg"))
-  if (gnash.fs.exists(hostFile)) {
-    files = files + [ hostFile ]
-  }
-
-  if (gnash.str.length(files) == 0) {
-    log("autoLoad: no config files found")
-    return {}
-  }
-
-  return load(files)
+def isBool(key) {
+  value = get(key)
+  lower = gnash.str.lower(value)
+  return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
 }
 
-// Returns true if any indexed entries exist for the base key, e.g. "users[0]"
-def isList(key) {
-  for (k in CONFIG.keys()) {
-    if (gnash.str.startsWith(k, gnash.str.concat(key, "["))) {
-      return true
-    }
+def isList(baseKey) {
+  for (k in CONFIG) {
+    if (gnash.str.startsWith(k, gnash.str.concat(baseKey, "["))) { return true }
   }
   return false
 }
 
-// Returns true if a scalar value exists for the exact key and it's not a list
+def hasChildren(baseKey) {
+  for (k in CONFIG) {
+    if (gnash.str.startsWith(k, gnash.str.concat(baseKey, "."))) { return true }
+    if (gnash.str.startsWith(k, gnash.str.concat(baseKey, "["))) { return true }
+  }
+  return false
+}
+
 def isScalar(key) {
-  if (CONFIG.get(key) != null && !isList(key)) {
-    return true
-  }
-  return false
+  if (get(key) == null) { return false }
+  if (isList(key)) { return false }
+  if (hasChildren(key)) { return false }
+  return true
 }
 
-// Optional: number of items in a list (0 if not a list)
-def listLen(key) {
-  if (!isList(key)) { return 0 }
-  n = 0
-  for (k in CONFIG.keys()) {
-    if (gnash.str.startsWith(k, gnash.str.concat(key, "["))) {
-      n = n + 1
+def listLen(baseKey) {
+  count = 0
+  for (k in CONFIG) {
+    if (gnash.str.startsWith(k, gnash.str.concat(baseKey, "["))) {
+      count = count + 1
     }
   }
-  return n
+  return count
 }
 
-// ---------- query API ---------------------------------------------------------
-
-def get(k) {
-  v = CONFIG.get(k)
-  if (v != null) { return v }
-  return null
-}
-
-def bool(k) {
-  v = get(k)
-  if (v == null) { return false }
-  lo = gnash.str.lower(v)
-  return lo == "true" || lo == "1" || lo == "yes" || lo == "on"
-}
-
-def list(prefix) {
-  out = []
-  for (k in CONFIG.keys()) {
-    if (gnash.str.startsWith(k, gnash.str.concat(prefix, "["))) {
-      out = out + [ CONFIG.get(k) ]
+def listValues(baseKey) {
+  results = []
+  for (k in CONFIG) {
+    if (gnash.str.startsWith(k, gnash.str.concat(baseKey, "["))) {
+      results = results + [ CONFIG[k] ]
     }
   }
-  return out
+  return results
 }
 
 def dump() {
   lines = []
-  for (k in CONFIG.keys()) {
-    lines = lines + [ gnash.str.concat(k, gnash.str.concat("=", CONFIG.get(k))) ]
+  for (k in CONFIG) {
+    val = CONFIG[k]
+    if (isScalar(k) || (gnash.str.contains(k, "[") && gnash.str.endsWith(k, "]"))) {
+      lines = lines + [ gnash.str.concat(k, gnash.str.concat("=", val)) ]
+    }
   }
-  // If sort is not available in runtime, return unsorted
   return gnash.str.sort(lines)
+}
+
+# ==============================================================================
+# AUTOLOAD
+# ==============================================================================
+def autoLoad() {
+  fileList = []
+
+  envPath = gnash.env.get("GNASH_CONFIG")
+  if (envPath != null && gnash.fs.exists(envPath)) { fileList = [ envPath ] }
+
+  if (gnash.fs.exists("./gnash.cfg")) { fileList = fileList + [ "./gnash.cfg" ] }
+
+  homeDir = gnash.env.get("HOME")
+  if (homeDir != null) {
+    userCfg = gnash.str.concat(homeDir, "/.config/gnash/gnash.cfg")
+    if (gnash.fs.exists(userCfg)) { fileList = fileList + [ userCfg ] }
+  }
+
+  host = gnash.env.get("HOSTNAME")
+  if (host == null) { host = "unknown" }
+  hostFile = gnash.str.concat("./", gnash.str.concat(host, ".cfg"))
+  if (gnash.fs.exists(hostFile)) { fileList = fileList + [ hostFile ] }
+
+  if (gnash.str.length(fileList) == 0) {
+    log("autoLoad: no config files found")
+    return {}
+  }
+
+  load(fileList)
+  return CONFIG
 }

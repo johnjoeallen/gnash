@@ -1,56 +1,38 @@
 #!/usr/bin/env bash
-# GENERATED from src/gnash/config/Config.gnash — with source comments
-# v4: robust to `set -u`; no tricky parameter expansions; safe rstrip.
+# config-loader.sh — YAML-lite multi-level loader (Bash port) v7.1
+# - Dotted keys for nested maps; key[n] for lists
+# - Arbitrary nesting via indent stack
+# - Safe under: set -u -o pipefail
 set -uo pipefail
 
-# --------------------------------------------------------------------------------
-# Gnash:
-# CONFIG = {}
-# --------------------------------------------------------------------------------
-declare -Ag CONFIG=()   # flattened key/value store
+# ------------------------------------------------------------------------------
+# Globals
+# ------------------------------------------------------------------------------
+declare -Ag CONFIG=()     # e.g. provisioning.os.packages.essentials.list[0]=curl
+declare -Ag INDEX_MAP=()  # next index per list base: INDEX_MAP["a.b.list"]=N
 
-# --------------------------------------------------------------------------------
-# Gnash:
-# def log(msg) { printf("[gnash:config] %s\n", msg) }
-# def dbg(msg) { if (env.get("GNASH_DEBUG") == "1") printf("[gnash:debug] %s\n", msg) }
-# --------------------------------------------------------------------------------
-gnash_config_log() { printf '[gnash:config] %s\n' "$*" >&2; }
-gnash_config_dbg() { [[ "${GNASH_DEBUG:-0}" == "1" ]] && printf '[gnash:debug] %s\n' "$*" >&2; }
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+log()   { printf '[gnash:config] %s\n' "$*" >&2; }
+debug() { [[ "${GNASH_DEBUG:-0}" == "1" ]] && printf '[gnash:debug] %s\n' "$*" >&2; }
 
-# --------------------------------------------------------------------------------
-# Gnash helpers:
-# def trimQuotes(s) { ... }
-# def leadingSpaces(s) { ... }
-# def normalize(line) { ... }
-# def stripComment(line) { ... }
-# def keyJoin(a,b) { a + "." + b }
-# def idxKey(prefix,i) { prefix + "[" + i + "]" }
-# --------------------------------------------------------------------------------
-
-# -- SAFE trim_quotes (works with set -u, empty strings, 1-char strings) ------
-gnash_config_trim_quotes() {
-  # Use positional param safely; do NOT rely on unset expansion
-  local s; s="${1-}"  # empty if missing
-  local len=${#s}
-  if (( len >= 2 )); then
-    # First/last chars without regex to avoid edge cases
-    local first=${s:0:1}
-    local last=${s: -1}
-    if [[ "$first" == '"' && "$last" == '"' ]]; then
-      printf '%s' "${s:1:len-2}"
-      return 0
-    elif [[ "$first" == "'" && "$last" == "'" ]]; then
-      printf '%s' "${s:1:len-2}"
-      return 0
+# ------------------------------------------------------------------------------
+# String helpers (nounset-safe)
+# ------------------------------------------------------------------------------
+trimQuotes() {
+  local text="${1-}"; local n=${#text}
+  if (( n >= 2 )); then
+    local a="${text:0:1}" b="${text: -1}"
+    if [[ "$a" == '"' && "$b" == '"' ]] || [[ "$a" == "'" && "$b" == "'" ]]; then
+      printf '%s' "${text:1:n-2}"; return 0
     fi
   fi
-  printf '%s' "$s"
+  printf '%s' "$text"
 }
 
-# -- SAFE rstrip (no nounset pitfalls, no nested parameter magic) --------------
-_gnash_config_rstrip_ws() {
-  local s; s="${1-}"
-  # Trim trailing spaces, tabs, CR, LF
+_rstripWs() {
+  local s="${1-}"
   while :; do
     case "$s" in
       *$'\r') s="${s%$'\r'}" ;;
@@ -63,215 +45,228 @@ _gnash_config_rstrip_ws() {
   printf '%s' "$s"
 }
 
-# -- normalize: CRLF -> LF, TAB -> 2 spaces, then rstrip -----------------------
-gnash_config_normalize() {
-  local line; line="${1-}"
-  line="${line//$'\r'/}"   # remove CRs
-  line="${line//$'\t'/  }" # replace tabs with 2 spaces
-  _gnash_config_rstrip_ws "$line"
+normalize() {
+  local line="${1-}"
+  line="${line//$'\r'/}"
+  line="${line//$'\t'/  }"
+  _rstripWs "$line"
 }
 
-# -- leading spaces (handles empty safely) -------------------------------------
-gnash_config_leading_spaces() {
-  local s; s="${1-}"
+leadingSpaces() {
+  local s="${1-}"
   local i=0 n=${#s}
   while (( i < n )) && [[ "${s:i:1}" == " " ]]; do ((i++)); done
   echo "$i"
 }
 
-# Safer rstrip that doesn’t tickle nounset
-_gnash_config_rstrip_ws() {
+stripComment() {
   local s="${1-}"
-  # Trim trailing space, tab, CR, LF
-  while [[ "${s}" == *$'\r' ]] || [[ "${s}" == *$'\n' ]] || [[ "${s}" == *$'\t' ]] || [[ "${s}" == *" " ]]; do
-    [[ "${s}" == *$'\r' ]] && s="${s%$'\r'}"
-    [[ "${s}" == *$'\n' ]] && s="${s%$'\n'}"
-    [[ "${s}" == *$'\t' ]] && s="${s%$'\t'}"
-    [[ "${s}" == *" "   ]] && s="${s% }"
-  done
-  printf '%s' "${s}"
+  [[ "$s" == *"#"* ]] && printf '%s' "${s%%#*}" || printf '%s' "$s"
 }
 
-gnash_config_normalize() {
-  local line="${1-}"
-  line="${line//$'\r'/}"         # CRLF → LF
-  line="${line//$'\t'/  }"       # TAB → 2 spaces
-  _gnash_config_rstrip_ws "${line}"
+joinDot() {
+  local left="${1-}" right="${2-}"
+  [[ -z "$left" ]] && printf '%s' "$right" || printf '%s' "$left.$right"
 }
 
-# naive trailing comment stripper (good enough for infra configs)
-gnash_config_strip_comment() {
-  local s="${1-}"
-  if [[ "${s}" == *"#"* ]]; then
-    printf '%s' "${s%%#*}"
-  else
-    printf '%s' "${s}"
-  fi
-}
+# ------------------------------------------------------------------------------
+# Tiny stack helpers (arrays by name)
+# ------------------------------------------------------------------------------
+stackPush() { local __arr="$1" __val="${2-}"; eval "$__arr+=(\"\$__val\")"; }
+stackPop()  { local __arr="$1" __len; eval "__len=\${#$__arr[@]}"; (( __len>0 )) && eval "unset '$__arr[\$((__len-1))]'"; }
+stackLast() { local __arr="$1" __len; eval "__len=\${#$__arr[@]}"; (( __len>0 )) && eval "printf '%s' \"\${$__arr[\$((__len-1))]}\"" || true; }
 
-gnash_config_key_join() { printf '%s.%s' "$1" "$2"; }
-gnash_config_idx_key()  { printf '%s[%s]' "$1" "$2"; }
+# ------------------------------------------------------------------------------
+# List index mgmt
+# ------------------------------------------------------------------------------
+indexOf()        { local base="${1-}"; printf '%s' "${INDEX_MAP[$base]:-0}"; }
+incrementIndex() { local base="${1-}"; INDEX_MAP["$base"]=$(( ${INDEX_MAP[$base]:-0} + 1 )); }
 
-# --------------------------------------------------------------------------------
-# Gnash loader core:
-#
-# def load(files) {
-#   for (f in files) {
-#     lines = fs.lines(f)
-#     for (raw in lines) {
-#       parse indent/section/key/list
-#       CONFIG.put(...)
-# --------------------------------------------------------------------------------
-gnash_config_load() {
-  (( $# >= 1 )) || { gnash_config_log "load: need at least one file"; return 2; }
+# ------------------------------------------------------------------------------
+# Core loader (indent stack; last file wins)
+# ------------------------------------------------------------------------------
+load() {
+  (( $# >= 1 )) || { log "load: no files provided"; return 2; }
 
-  local file raw L indent trimmed section="" key="" key_indent=-1 idx=0
+  local -a indentStack=() pathStack=()
+  local file="" raw="" line="" indentLevel=0 trimmed=""
 
   for file in "$@"; do
-    if [[ ! -f "$file" ]]; then gnash_config_log "warn: file not found: $file"; continue; fi
-    gnash_config_log "load: $file"
-    section=""; key=""; key_indent=-1; idx=0
+    if [[ ! -f "$file" ]]; then log "warn: file not found: $file"; continue; fi
+    log "load: $file"
+    indentStack=(); pathStack=()
 
-    # read lines; preserve last partial line
+    # read lines; preserve last without trailing newline
     while IFS= read -r raw || [[ -n "${raw-}" ]]; do
-      # normalize & strip comments
-      L="$(gnash_config_normalize "${raw-}")"
-      L="$(gnash_config_strip_comment "${L-}")"
-      # skip empty/whitespace lines fast
-      [[ -z "${L//[[:space:]]/}" ]] && continue
+      line="$(normalize "${raw-}")"
+      line="$(stripComment "$line")"
+      [[ -z "${line//[[:space:]]/}" ]] && continue
 
-      indent="$(gnash_config_leading_spaces "${L-}")"
-      # substring from indent to end (safe even when indent==len)
-      trimmed="${L:${indent}}"
+      indentLevel="$(leadingSpaces "$line")"
+      trimmed="${line:${indentLevel}}"
 
-      # SECTION: top-level "name:"
-      if (( indent == 0 )) && [[ "${trimmed}" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*):[[:space:]]*$ ]]; then
-        section="${BASH_REMATCH[1]}"
-        gnash_config_dbg "section=${section}"
-        key=""; key_indent=-1; idx=0
+      # SECTION: "name:"
+      if (( indentLevel == 0 )) && [[ "$trimmed" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*):[[:space:]]*$ ]]; then
+        local sectionName="${BASH_REMATCH[1]}"
+        indentStack=(0)
+        pathStack=("$sectionName")
+        CONFIG["$sectionName"]=""              # track parent existence
+        debug "section=$sectionName"
         continue
       fi
 
-      # KEY: "  key: value" or "  key:"
-      if (( indent > 0 )) && [[ -n "${section}" ]] && [[ "${trimmed}" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
-        key="${BASH_REMATCH[1]}"
-        local v; v="$(gnash_config_trim_quotes "${BASH_REMATCH[2]-}")"
-        CONFIG["$(gnash_config_key_join "${section}" "${key}")"]="${v}"
-        gnash_config_dbg "set ${section}.${key}=${v}"
-        key_indent="${indent}"; idx=0
+      # KEY: "key:" or "key: value"
+      if [[ "$trimmed" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
+        local keyName="${BASH_REMATCH[1]}"
+        local rawValue="${BASH_REMATCH[2]-}"
+        local value; value="$(trimQuotes "$rawValue")"
+
+        # Pop until parent indent < current indentLevel
+        while ((${#indentStack[@]} > 0)); do
+          local topIndent="${indentStack[${#indentStack[@]}-1]}"
+          (( topIndent >= indentLevel )) && { stackPop indentStack; stackPop pathStack; } || break
+        done
+
+        local parentPath; parentPath="$(stackLast pathStack || true)"
+        local currentPath=""
+        if [[ -z "$parentPath" ]]; then currentPath="$keyName"; else currentPath="$(joinDot "$parentPath" "$keyName")"; fi
+
+        stackPush indentStack "$indentLevel"
+        stackPush pathStack   "$currentPath"
+
+        CONFIG["$currentPath"]="$value"
+        : "${INDEX_MAP[$currentPath]:=0}"
+        debug "set $currentPath=$value"
         continue
       fi
 
-      # LIST item: deeper indent than key, "- item"
-      if (( indent > key_indent )) && [[ -n "${section}" && -n "${key}" ]] && [[ "${trimmed}" =~ ^-[[:space:]]*(.*)$ ]]; then
-        local item; item="$(gnash_config_trim_quotes "${BASH_REMATCH[1]-}")"
-        local base; base="$(gnash_config_key_join "${section}" "${key}")"
-        CONFIG["$(gnash_config_idx_key "${base}" "${idx}")"]="${item}"
-        gnash_config_dbg "push ${base}[${idx}]=${item}"
-        ((idx++))
-        continue
+      # LIST item: "- value" with deeper indent than last key
+      if (( ${#indentStack[@]} > 0 )) && [[ "$trimmed" =~ ^-[[:space:]]*(.*)$ ]]; then
+        local lastIndent="${indentStack[${#indentStack[@]}-1]}"
+        if (( indentLevel > lastIndent )); then
+          local item; item="$(trimQuotes "${BASH_REMATCH[1]-}")"
+          local listKey; listKey="$(stackLast pathStack || true)"
+          # Guard against empty listKey under -u
+          if [[ -n "$listKey" ]]; then
+            local idx; idx="$(indexOf "$listKey")"
+            CONFIG["$listKey[$idx]"]="$item"
+            incrementIndex "$listKey"
+            debug "push $listKey[$idx]=$item"
+          else
+            debug "skip: list item without a current key"
+          fi
+          continue
+        fi
       fi
 
-      gnash_config_dbg "skip: '${raw-}'"
+      debug "skip: $raw"
     done < "$file"
   done
 
-  printf '[gnash:config] parsed: %s keys\n' "${#CONFIG[@]}" >&2
+  log "parsed: ${#CONFIG[@]} keys"
 }
 
-# --------------------------------------------------------------------------------
-# Gnash query API:
-#
-# def get(k) { CONFIG[k] }
-# def bool(k) { v.lower() in true|1|yes|on }
-# def list(prefix) { for k in CONFIG.keys if prefix+"[" }
-# def dump()
-# --------------------------------------------------------------------------------
-gnash_config_get()  { local k="${1:?usage}"; [[ -n ${CONFIG[$k]+x} ]] && printf '%s\n' "${CONFIG[$k]}"; }
-gnash_config_bool() { local v; v="$(gnash_config_get "$1" || true)"; [[ "${v,,}" =~ ^(true|1|yes|on)$ ]]; }
-gnash_config_list() { local p="${1:?usage}"; local k; for k in "${!CONFIG[@]}"; do [[ $k == "$p"[[]* ]] && printf '%s\n' "${CONFIG[$k]}"; done; }
-gnash_config_dump() {
-  local k
+# ------------------------------------------------------------------------------
+# Dotted-depth helpers / type checks
+# ------------------------------------------------------------------------------
+hasChildren() {
+  local prefix="${1:?usage: hasChildren prefix}" k=""
   for k in "${!CONFIG[@]}"; do
-    # If key has [index], it's a list entry → always print
-    if [[ "$k" =~ \[[0-9]+\]$ ]]; then
-      printf '%s=%s\n' "$k" "${CONFIG[$k]}"
-      continue
-    fi
-
-    # If key has no value AND list entries exist → skip
-    if [[ -z "${CONFIG[$k]}" ]]; then
-      # does any key start with k[ ?
-      local prefix="$k["
-      local found=""
-      for x in "${!CONFIG[@]}"; do
-        if [[ "$x" == "$prefix"* ]]; then
-          found=1
-          break
-        fi
-      done
-      [[ -n "$found" ]] && continue
-    fi
-
-    # Otherwise print scalar
-    printf '%s=%s\n' "$k" "${CONFIG[$k]}"
-  done | sort
-}
-
-# Return 0 if key represents a list (i.e., there exist indexed entries key[0]...), else 1
-# Usage: gnash_config_is_list "dockerGroup.users"
-gnash_config_is_list() {
-  local base="${1:?usage: gnash_config_is_list key}" k
-  local prefix="${base}["
-  for k in "${!CONFIG[@]}"; do
-    [[ "$k" == "$prefix"* ]] && return 0
+    [[ "$k" == "$prefix."* ]] && return 0
+    [[ "$k" == "$prefix["* ]] && return 0
   done
   return 1
 }
 
-# Return 0 if key is a scalar (exact key present AND not a list), else 1
-# Usage: gnash_config_is_scalar "dockerGroup.enabled"
-gnash_config_is_scalar() {
-  local key="${1:?usage: gnash_config_is_scalar key}"
-  if [[ -n "${CONFIG[$key]+x}" ]] && ! gnash_config_is_list "$key"; then
-    return 0
-  fi
+isList() {
+  local base="${1-}" k="" pref=""
+  [[ -z "$base" ]] && return 1
+  pref="${base}["
+  for k in "${!CONFIG[@]}"; do
+    [[ "$k" == "$pref"* ]] && return 0
+  done
   return 1
 }
 
-# Optional: echo list length (0 if not a list)
-# Usage: gnash_config_list_len "dockerGroup.users"
-gnash_config_list_len() {
-  local base="${1:?usage: gnash_config_list_len key}" k count=0
-  local prefix="${base}["
+listLen() {
+  local base="${1-}" k="" count=0 pref=""
+  [[ -z "$base" ]] && { printf '0\n'; return 0; }
+  pref="${base}["
   for k in "${!CONFIG[@]}"; do
-    [[ "$k" == "$prefix"* ]] && ((count++))
+    [[ "$k" == "$pref"* ]] && ((count++))
   done
   printf '%d\n' "$count"
 }
 
-# --------------------------------------------------------------------------------
-# Gnash autoLoad():
-# checks env GNASH_CONFIG, ./gnash.cfg, ~/.config/gnash/gnash.cfg, ./$(hostname).cfg
-# --------------------------------------------------------------------------------
-gnash_config_auto_load() {
+listValues() {
+  local base="${1-}" k="" pref=""
+  [[ -z "$base" ]] && return 0
+  pref="${base}["
+  for k in "${!CONFIG[@]}"; do
+    [[ "$k" == "$pref"* ]] && printf '%s\n' "${CONFIG[$k]}"
+  done
+}
+
+isScalar() {
+  local keyName="${1:?usage: isScalar key}"
+  [[ -n ${CONFIG[$keyName]+x} ]] && ! isList "$keyName" && ! hasChildren "$keyName"
+}
+
+# ------------------------------------------------------------------------------
+# Query API
+# ------------------------------------------------------------------------------
+get() { local keyName="${1:?usage: get key}"; [[ -n ${CONFIG[$keyName]+x} ]] && printf '%s\n' "${CONFIG[$keyName]}"; }
+
+isBool() {
+  local keyName="${1:?usage: isBool key}" v=""
+  v="$(get "$keyName" || true)"; v="${v,,}"
+  [[ "$v" =~ ^(true|1|yes|on)$ ]]
+}
+
+listLen() {
+  local base="${1:?usage: listLen key}" k="" count=0 pref="${base}["
+  for k in "${!CONFIG[@]}"; do [[ "$k" == "$pref"* ]] && ((count++)); done
+  printf '%d\n' "$count"
+}
+
+listValues() {
+  local base="${1:?usage: listValues key}" k="" pref="${base}["
+  for k in "${!CONFIG[@]}"; do [[ "$k" == "$pref"* ]] && printf '%s\n' "${CONFIG[$k]}"; done
+}
+
+dump() {
+  local k="" v=""
+  for k in "${!CONFIG[@]}"; do
+    v="${CONFIG[$k]-}"
+    if [[ "$k" =~ \[[0-9]+\]$ ]]; then
+      printf '%s=%s\n' "$k" "$v"
+    elif isScalar "$k"; then
+      printf '%s=%s\n' "$k" "$v"
+    fi
+  done | sort
+}
+
+# ------------------------------------------------------------------------------
+# Auto-discovery (env → project → user → host)
+# ------------------------------------------------------------------------------
+autoLoad() {
   local files=()
   [[ -n "${GNASH_CONFIG:-}" && -f "$GNASH_CONFIG" ]] && files+=("$GNASH_CONFIG")
   [[ -f ./gnash.cfg ]] && files+=(./gnash.cfg)
   [[ -f "$HOME/.config/gnash/gnash.cfg" ]] && files+=("$HOME/.config/gnash/gnash.cfg")
   local hn="${HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
-  local host="./${hn%%.*}.cfg"
-  [[ -f "$host" ]] && files+=("$host")
-  (( ${#files[@]} )) || { gnash_config_log "autoLoad: no config files found"; return 1; }
-  gnash_config_load "${files[@]}"
+  local hostFile="./${hn%%.*}.cfg"
+  [[ -f "$hostFile" ]] && files+=("$hostFile")
+  (( ${#files[@]} )) || { log "autoLoad: no config files found"; return 1; }
+  load "${files[@]}"
 }
 
 # ------------------------------------------------------------------------------
-# If executed directly, auto-load and dump config
+# If executed directly: auto-load & dump leaves
 # ------------------------------------------------------------------------------
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  gnash_config_log "auto-loading config…"
-  gnash_config_auto_load
-  gnash_config_log "dumping configuration:"
-  gnash_config_dump
+  log "auto-loading config…"
+  autoLoad
+  log "dumping configuration:"
+  dump
 fi
